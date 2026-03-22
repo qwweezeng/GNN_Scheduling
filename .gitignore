@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.DS_Store
+
+# Virtual environments
+events.out.tfevents.*
+.venv/
+.pytest_cache/
+
+# Datasets - too large for GitHub
+datasets/
+logs/
+results/
+uav_network_init.png
+*.pth

@@ -1,0 +1,107 @@
+############################################################
+# Experiment configuration file (configs/exp_example.yaml)  #
+# Each field has a short description below.                #
+############################################################
+
+# Network / scenario parameters
+NUM_UAV: 50                    # number of UAV links in the scenario (N)
+AREA_WIDTH: 1000               # side length of the square area (meters)
+HEIGHT_RANGE: [50, 150]        # min and max UAV altitude (meters)
+MIN_DISTANCE: 20               # minimum separation distance between UAVs (meters)
+TX_POWER: 10                   # transmit power in dBm (used by channel model)
+G_T: 0                         # transmitter antenna gain in dBi
+G_R: 0                         # receiver antenna gain in dBi
+
+# Wireless communication parameters (aligned with Spatial DL / FPLinQ baselines)
+BANDWIDTH: !!float 5e6         # System bandwidth (Hz) - 5 MHz
+CARRIER_FREQ: !!float 2.4e9    # Carrier frequency (Hz) - 2.4 GHz
+NOISE_PSD: -169                # Noise power spectral density (dBm/Hz)
+SNR_GAP_DB: 0                  # SNR gap (dB) - 0 means no gap
+
+# Feature selection
+USE_QUANTIZED_DISTANCE: false  # true: use q-bit quantized distance vector as node feature
+Q_BITS: 8                      # number of bits for quantized distance (when above is true)
+
+# Dataset sizes
+TRAIN_SIZE: 500                # number of training samples to generate / load
+VAL_SIZE: 128                   # number of validation samples
+TEST_SIZE: 128                  # number of test samples
+
+# Dataset caching (for faster repeated experiments)
+DATASET_CACHE_PATH: './datasets/dataset_numUAV=50.pkl'       # path to pickled dataset file, e.g., "./datasets/dataset.pkl"
+
+# Optimization / training hyperparameters
+LR: 0.0001                     # optimizer learning rate (Adam)
+# Regularization weights (unified naming):
+# - LAMBDA_SPARSITY: weight for sparsity penalty (mean(pi))
+# - LAMBDA_CONFLICT: weight for conflict penalty (pairwise interference)
+LAMBDA_SPARSITY: 0.0          # weight of sparsity regularizer (encourages fewer active links)
+LAMBDA_CONFLICT: 0.0          # weight of conflict/interference penalty
+EPOCHS: 30                      # number of training epochs
+BATCH_SIZE: 1                  # per-sample processing (set >1 only if batching supported)
+DEVICE: auto                   # 'auto' for GPU detection, or 'cpu'/'cuda:X'
+GPU_ID: 0                       # GPU ID to use when DEVICE is 'auto' (0, 1, 2, ...)
+
+# Misc / runtime
+GEN_BATCH_SIZE: 50             # batch size used when generating datasets to avoid OOM
+EVAL_INTERVAL: 1               # run validation every N epochs
+CONFLICT_WARMUP: 10             # number of epochs to gradually increase conflict penalty
+
+# GNN / Model architecture parameters
+NODE_RAW_DIM: null            # null = infer from USE_QUANTIZED_DISTANCE (Q_BITS) or 1 for SNR
+MLP_HIDDEN_DIMS: [32, 32]     # MLP hidden dims for initial node embedding
+NODE_EMBED_DIM: 32            # node embedding output dimension 可参考[graph embedding]
+EDGE_DIM: 1                   # edge attribute dimension (interference weight)
+NUM_HEADS: 4                  # number of attention heads for GAT
+GAT_OUT_DIM: 48               # total output dimension from GAT layer (all heads)
+NUM_GAT_LAYERS: 4             # number of GAT layers / message-passing iterations
+SCHEDULE_HIDDEN: 32           # hidden size for final scheduling MLP
+
+# Training / scheduler / clipping
+LR_SCHEDULER_TYPE: "ReduceLROnPlateau"   # options: ReduceLROnPlateau, StepLR, None
+LR_SCHEDULER_CONFIG:                    # used when LR_SCHEDULER_TYPE == ReduceLROnPlateau
+  mode: "max"
+  factor: 0.5
+  patience: 10
+  min_lr: 0.00001
+
+GRAD_CLIP_CONFIG:                       # gradient clipping configuration
+  explosion_threshold: 100
+  explosion_clip: 10.0
+  normal_clip: 5.0
+
+# Runtime / logging
+USE_RUNNER: true            # whether main.py should use ExperimentRunner by default
+RESULTS_DIR: "./results"    # where to save CSV/JSON
+LOG_DIR: "./logs"           # where to save model checkpoints / tensorboard logs
+SAVE_MODEL: true            # whether to save final model checkpoint
+
+# Excel sheet configuration (automatically set based on EXPERIMENT_GROUP)
+EXCEL_SHEET: "Sheet1"       # Default sheet, will be overridden based on experiment group
+
+# Reproducibility
+SEED: 10086                    # global random seed (overridable by CLI --seed)
+
+# Dropout / activation
+DROPOUT: 0.0                # dropout probability used in MLPs (0.0 = no dropout)
+ACTIVATION: "relu"          # activation in MLPs: relu, gelu, tanh
+
+# Evaluation
+EVAL_METRICS: ["sum_rate"]  # list of eval metrics to compute
+
+# Baseline evaluation flags (run during experiments)
+EVAL_BASELINES: false
+BASELINE_SPATIALDL: true
+BASELINE_FPLINQ: true
+BASELINE_GREEDY: true
+BASELINE_PARAMS:
+  spatial_n_links_pad: 50
+  use_fading_in_baselines: true
+
+# Experiment metadata (for organized logging & searching)
+EXPERIMENT_GROUP: "base"
+NOTES: "multi-head debug"
+
+# Notes:
+# - Modify the fields above to control model architecture, training and logging.
+# - For reproducible experiments, set SEED and use the CLI `--seed` to override if needed.
