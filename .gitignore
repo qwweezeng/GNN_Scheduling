@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[oc]
+*.egg-info/
+*.egg
+build/
+dist/
+wheels/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs & results
+logs/
+results/
+*.log
+
+# Data (large, keep local only)
+datasets/
+docs/*.pdf
+uav_network_init.png
+
+# uv lock
+uv.lock
