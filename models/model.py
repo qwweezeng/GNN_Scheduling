@@ -238,19 +238,11 @@ class GATScheduler(nn.Module):
             
         return pi_v, h_v_final
 
-def calculate_achievable_rate(pi, state, binary=True, detach_hard=False, use_quantized=False):
+def calculate_achievable_rate(pi, state, binary=True, detach_hard=False):
     """
-    计算可达速率，与基线方法 compute_sum_rate_from_allocs 一致
-    
-    Args:
-        pi: [N, 1] 调度决策 (0/1 或概率值)
-        state: 网络状态
-        binary: 是否对 pi 进行二值化
-        detach_hard: 是否从计算图中分离 pi
-        use_quantized: 是否使用量化信号功率
-    
-    Returns:
-        achievable_rates: [N] 每个链路的可达速率 (bits/s)
+    计算可达速率。
+    signal_power / signal_power_large_scale / signal_power_quant 均存储在 state 中，
+    由 generate_network 根据 CSI_MODE 统一计算并传入。
     """
     num_links = state.num_vertices
     device = pi.device
@@ -263,11 +255,25 @@ def calculate_achievable_rate(pi, state, binary=True, detach_hard=False, use_qua
     else:
         pi_decision = pi
 
-    # signal_power 是 [num_uavs, num_uavs] 矩阵，不是 [num_links, num_links]
-    if use_quantized and hasattr(state, "signal_power_quant"):
-        signal_power = state.signal_power_quant.to(device)
+    # 三套功率矩阵由 NetworkState 统一管理，此处直接取用
+    sp = state.signal_power
+    if getattr(state, "signal_power_large_scale", None) is not None:
+        sp_ls = state.signal_power_large_scale
     else:
-        signal_power = state.signal_power.to(device)
+        sp_ls = sp
+    if getattr(state, "signal_power_quant", None) is not None:
+        sp_q = state.signal_power_quant
+    else:
+        sp_q = sp
+
+    # 由 state 上的字段标记当前 CSI_MODE
+    csi_mode = getattr(state, "csi_mode", "perfect")
+    if csi_mode == "large_scale":
+        signal_power = sp_ls.to(device)
+    elif csi_mode == "quantized":
+        signal_power = sp_q.to(device)
+    else:
+        signal_power = sp.to(device)
 
     # links[i] = (tx_uav_idx, rx_uav_idx)
     link_tx = state.links[:, 0]  # [num_links]

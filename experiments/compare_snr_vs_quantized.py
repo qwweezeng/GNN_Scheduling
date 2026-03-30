@@ -27,20 +27,18 @@ def load_config(path):
         else:
             return json.load(f)
 
-def run_experiment(config_path, use_quantized_distance, results_dir="./results", logs_dir="./logs"):
+def run_experiment(config_path, csi_mode, results_dir="./results", logs_dir="./logs"):
     """Run a single experiment with given configuration."""
     print(f"\n{'='*50}")
-    print(f"Running experiment: {'Quantized Distance' if use_quantized_distance else 'SNR'}")
+    print(f"Running experiment: CSI_MODE={csi_mode}")
     print(f"{'='*50}")
 
     # Load base configuration
     params = load_config(config_path).copy()
-
-    # Override quantization setting
-    params["USE_QUANTIZED_DISTANCE"] = use_quantized_distance
+    params["CSI_MODE"] = csi_mode
 
     print(f"[compare] Loaded config from {config_path}")
-    print(f"[compare] USE_QUANTIZED_DISTANCE: {use_quantized_distance}")
+    print(f"[compare] CSI_MODE: {csi_mode}")
 
     # Run experiment using ExperimentRunner
     runner = ExperimentRunner(params, results_dir=results_dir, log_dir=logs_dir)
@@ -65,20 +63,20 @@ def main():
     parser.add_argument("--logs", default="./logs", help="Logs directory")
     args = parser.parse_args()
 
-    # Experiment 1: SNR features
-    print("\nExperiment 1: SNR Features")
+    # Experiment 1: Perfect CSI
+    print("\nExperiment 1: Perfect CSI")
     results_snr = run_experiment(
         config_path=args.config,
-        use_quantized_distance=False,
+        csi_mode="perfect",
         results_dir=args.results,
         logs_dir=args.logs
     )
 
-    # Experiment 2: Quantized Distance features
-    print("\nExperiment 2: Quantized Distance Features")
+    # Experiment 2: Quantized Distance
+    print("\nExperiment 2: Quantized Distance")
     results_quantized = run_experiment(
         config_path=args.config,
-        use_quantized_distance=True,
+        csi_mode="quantized",
         results_dir=args.results,
         logs_dir=args.logs
     )

@@ -4,7 +4,7 @@
 ############################################################
 
 # Network / scenario parameters
-NUM_UAV: 50                    # number of UAV links in the scenario (N)
+NUM_UAV: 20                    # number of UAV links in the scenario (N)
 AREA_WIDTH: 1000               # side length of the square area (meters)
 HEIGHT_RANGE: [50, 150]        # min and max UAV altitude (meters)
 MIN_DISTANCE: 20               # minimum separation distance between UAVs (meters)
@@ -18,9 +18,12 @@ CARRIER_FREQ: !!float 2.4e9    # Carrier frequency (Hz) - 2.4 GHz
 NOISE_PSD: -169                # Noise power spectral density (dBm/Hz)
 SNR_GAP_DB: 0                  # SNR gap (dB) - 0 means no gap
 
-# Feature selection
-USE_QUANTIZED_DISTANCE: false  # true: use q-bit quantized distance vector as node feature
-Q_BITS: 8                      # number of bits for quantized distance (when above is true)
+# 信道信息模式（统一控制：模型输入 + loss/utility 计算）
+# perfect : 完美CSI，含小尺度衰落（默认）
+# large_scale : 仅大尺度衰落（路径损耗），无小尺度随机性
+# quantized : 量化距离近似（大尺度）
+CSI_MODE: "perfect"
+Q_BITS: 8                      # 量化比特数（仅 CSI_MODE="quantized" 时生效）
 
 # Dataset sizes
 TRAIN_SIZE: 500                # number of training samples to generate / load
@@ -28,7 +31,7 @@ VAL_SIZE: 128                   # number of validation samples
 TEST_SIZE: 128                  # number of test samples
 
 # Dataset caching (for faster repeated experiments)
-DATASET_CACHE_PATH: './datasets/dataset_numUAV=50.pkl'       # path to pickled dataset file, e.g., "./datasets/dataset.pkl"
+DATASET_CACHE_PATH: './datasets/dataset_numUAV=20.pkl'       # path to pickled dataset file, e.g., "./datasets/dataset.pkl"
 
 # Optimization / training hyperparameters
 LR: 0.0001                     # optimizer learning rate (Adam)

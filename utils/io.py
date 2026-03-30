@@ -12,7 +12,7 @@ def save_experiment_results(trained_model, train_set, test_util, params,
     Concise saver: write per-epoch JSON, append Excel summary (all_experiments_summary.xlsx), save model state.
     No longer saves CSV files - now uses Excel as the default format.
     Raises RuntimeError on any I/O failure with aggregated messages.
-    params: dict containing keys used below (NUM_UAV, USE_QUANTIZED_DISTANCE, Q_BITS, LR, LAMBDA_SPARSITY, LAMBDA_CONFLICT, BATCH_SIZE, EPOCHS, GRAD_CLIP_NORMAL, NOTES, seed)
+    params: dict containing keys used below (NUM_UAV, CSI_MODE, Q_BITS, LR, LAMBDA_SPARSITY, LAMBDA_CONFLICT, BATCH_SIZE, EPOCHS, NOTES, seed)
     excel_sheet: Excel sheet name for saving results (default: "Sheet1")
     """
     os.makedirs(results_dir, exist_ok=True)
@@ -31,7 +31,8 @@ def save_experiment_results(trained_model, train_set, test_util, params,
         model_obj = trained_model if hasattr(trained_model, "state_dict") else None
 
     exp_time = strftime("%Y%m%d_%H%M")
-    feature_name = f"Quantized{params.get('Q_BITS')}" if params.get("USE_QUANTIZED_DISTANCE") else "SNR"
+    feature_name = f"Quantized{params.get('Q_BITS')}" if params.get("CSI_MODE") == "quantized" else (
+        "LargeScale" if params.get("CSI_MODE") == "large_scale" else "SNR")
     experiment_id = f"exp_{params.get('NUM_UAV')}_{exp_time}"
     # create per-experiment directory for organized storage
     experiment_dir = os.path.join(results_dir, experiment_id)
@@ -158,3 +159,27 @@ def save_experiment_results(trained_model, train_set, test_util, params,
     return {"excel_path": excel_path, "json_path": json_path, "experiment_id": experiment_id, "experiment_dir": experiment_dir}
 
 
+def generate_dataset(num_samples, simulator, batch_size=100, csi_mode="perfect", q_bits=8):
+    """
+    Generate dataset in batches to avoid memory overflow.
+    Used by ExperimentRunner.
+
+    Args:
+        num_samples: total number of samples
+        simulator: network simulator instance
+        batch_size: batch size for generation
+        csi_mode: "perfect" | "large_scale" | "quantized"
+            Controls model input and rate computation uniformly.
+        q_bits: number of quantization bits (only used when csi_mode == "quantized")
+    """
+    dataset = []
+    for i in range(0, num_samples, batch_size):
+        batch_end = min(i + batch_size, num_samples)
+        batch = []
+        for _ in range(i, batch_end):
+            sample = simulator.generate_network(csi_mode=csi_mode, q_bits=q_bits)
+            batch.append(sample)
+        dataset.extend(batch)
+        if (i + batch_size) % 50 == 0 or batch_end == num_samples:
+            print(f"  Generated {batch_end}/{num_samples} samples...")
+    return dataset

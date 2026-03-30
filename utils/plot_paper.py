@@ -1,9 +1,10 @@
 """
 综合画图模块
-包含三个图的画图函数:
+包含若干论文用图:
 1. numuav与baseline对比的柱状图
 2. train_loss/val_utility随epoch变化的曲线图
 3. 性能随训练样本数量变化的曲线图
+4. CSI 量化不完美性（Test Utility vs. quantization bits）
 """
 
 import os
@@ -16,7 +17,7 @@ from matplotlib.pyplot import cm
 
 from utils.plot_config import (
     NUMUAV_COLORS, BASELINE_COLORS, PLOT_STYLE, SMOOTH_PARAMS,
-    get_numuav_color, get_all_numuav_colors, update_colors
+    get_numuav_color, get_all_numuav_colors, update_colors,
 )
 
 
@@ -526,6 +527,220 @@ def plot_performance_vs_samples(
     return eps_path, png_path
 
 
+# ==================== 图4: CSI 不完美性实验 ====================
+
+def plot_csi_imperfection(
+    results_dir: str = 'results',
+    excel_file: str = 'all_experiments_summary.xlsx',
+    sheet_name: str = 'Sheet3',
+    numuav_values: List[int] = None,
+    output_dir: str = None,
+    figsize: Tuple[float, float] = (5.5, 4),
+    show: bool = False,
+    reference_mode: str = 'both',   # 'snr', 'large_scale', 'both'
+    with_gap_fill: bool = False,      # 是否在相邻曲线之间填充阴影
+) -> Tuple[str, str]:
+    """
+    绘制不同量化精度对调度性能的影响（Test Utility）。
+
+    风格与 ``plot_training_curves`` 一致：numUAV 配色、实线 + 圆点、网格。
+    x 轴仅包含有数据的量化档位（默认 2–10 bit，不含 12）。
+
+    对 numUAV ∈ {20,30,40,50} 的每条曲线，若开启填充：下界为该点 test utility，
+    上界为 ``min(下一档 numUAV 的 test utility, 自身的 Perfect CSI)``（``snr``）；
+    最大档 numUAV=50 无上一条曲线，上界仅为自身 Perfect CSI。Large-Scale 仍只画线。
+    填充在细网格上对曲线做与 ``plot`` 相同的分段线性插值后再 ``fill_between``，
+    使上界贴着粗实线并在与水平上界相交处连续，避免仅在离散 q 上取点连线产生楔形空白。
+
+    数据来源：Sheet3，group = csi_imperfection。
+    """
+    if output_dir is None:
+        output_dir = os.path.join(results_dir, 'img')
+    os.makedirs(output_dir, exist_ok=True)
+
+    if numuav_values is None:
+        numuav_values = [20, 30, 40, 50]
+
+    # ── 读取数据 ────────────────────────────────────────────────────────────
+    excel_path = os.path.join(results_dir, excel_file)
+    df = pd.read_excel(excel_path, sheet_name=sheet_name)
+    df = df[df['group'] == 'csi_imperfection'].copy()
+
+    # 解析 feature 中的量化 bit 数
+    def parse_qbits(feature: str):
+        f = str(feature)
+        if 'Quantized' in f:
+            try:
+                return int(f.replace('Quantized', ''))
+            except ValueError:
+                return None
+        return None
+
+    df['qbits'] = df['feature'].apply(parse_qbits)
+
+    # 将 test_utility 乘 5 转换为 Mbps
+    df['test_util_mbps'] = df['test_utility'] * 5
+
+    # ── 建立数据字典 {numuav -> {qbits: test_util, 'large_scale': ..., 'snr': ...}}
+    data = {n: {} for n in numuav_values}
+
+    for _, row in df.iterrows():
+        n = int(row['num_uav'])
+        if n not in data:
+            continue
+        feat = str(row['feature']).strip()
+        val  = float(row['test_util_mbps'])
+
+        if feat == 'LargeScale':
+            data[n]['large_scale'] = val
+        elif feat == 'SNR':
+            data[n]['snr'] = val
+        elif row['qbits'] is not None:
+            data[n][int(row['qbits'])] = val
+
+    # ── 绘图（与 plot_training_curves 同款线型 / 图例风格）──────────────────
+    fig, ax = plt.subplots(figsize=figsize)
+
+    colors = get_all_numuav_colors()
+    q_bits = [2, 4, 6, 8, 10]
+    x_min, x_max = q_bits[0] - 0.6, q_bits[-1] + 0.6
+
+    ref_handles = []   # 额外图例项（上界 + gap patch）
+    ref_labels   = []
+
+    def _align_two_curves(
+        q_a: List[int], v_a: List[float], q_b: List[int], v_b: List[float]
+    ) -> Tuple[Optional[List[int]], Optional[List[float]], Optional[List[float]]]:
+        """仅在两端都有的量化档位上对齐，避免长度不一致导致整段不画填充。"""
+        da = dict(zip(q_a, v_a))
+        db = dict(zip(q_b, v_b))
+        common_q = [q for q in q_a if q in db]
+        if not common_q:
+            return None, None, None
+        return common_q, [da[q] for q in common_q], [db[q] for q in common_q]
+
+    # ── 先画所有量化曲线与上界参考线 ────────────────────────────────────────
+    for idx, numuav in enumerate(numuav_values):
+        color = colors.get(numuav, '#333333')
+
+        q_vals = [data[numuav].get(b) for b in q_bits]
+        valid_mask = [v is not None for v in q_vals]
+        valid_q = [b for b, m in zip(q_bits, valid_mask) if m]
+        valid_v = [v for v, m in zip(q_vals, valid_mask) if m]
+
+        ax.plot(
+            valid_q, valid_v,
+            color=color, linewidth=2,
+            label=f'numUAV={numuav}',
+            marker='o', markersize=6, markevery=1,
+        )
+
+        if reference_mode in ('snr', 'both') and 'snr' in data[numuav]:
+            ub_snr = data[numuav]['snr']
+            ax.plot(valid_q, [ub_snr] * len(valid_q),
+                    color=color, lw=1.5, ls=':', zorder=2)
+            if idx == 0:
+                ref_handles.append(plt.Line2D([0], [0], color='gray', lw=1.5, ls=':'))
+                ref_labels.append('Perfect CSI (upper bound)')
+        if reference_mode in ('large_scale', 'both') and 'large_scale' in data[numuav]:
+            ub_ls = data[numuav]['large_scale']
+            ax.plot(valid_q, [ub_ls] * len(valid_q),
+                    color=color, lw=1.5, ls='--', zorder=2)
+            if idx == 0:
+                ref_handles.append(plt.Line2D([0], [0], color='gray', lw=1.5, ls='--'))
+                ref_labels.append('Large-Scale (upper bound)')
+
+    # ── 填充：每条曲线 i — 下界=自身 utility，上界=min(下一档 utility, 自身 SNR) ─
+    if with_gap_fill:
+        for idx, numuav in enumerate(numuav_values):
+            color = colors.get(numuav, '#333333')
+
+            q_vals = [data[numuav].get(b) for b in q_bits]
+            valid_mask = [v is not None for v in q_vals]
+            valid_q = [b for b, m in zip(q_bits, valid_mask) if m]
+            valid_v = [v for v, m in zip(q_vals, valid_mask) if m]
+
+            if reference_mode in ('snr', 'both') and 'snr' in data[numuav]:
+                ub_self = float(data[numuav]['snr'])
+            elif reference_mode in ('large_scale', 'both') and 'large_scale' in data[numuav]:
+                ub_self = float(data[numuav]['large_scale'])
+            else:
+                continue
+
+            if idx < len(numuav_values) - 1:
+                n_next = numuav_values[idx + 1]
+                q_n = [data[n_next].get(b) for b in q_bits]
+                m_n = [v is not None for v in q_n]
+                valid_q_n = [b for b, m in zip(q_bits, m_n) if m]
+                valid_v_n = [v for v, m in zip(q_n, m_n) if m]
+
+                aligned = _align_two_curves(valid_q, valid_v, valid_q_n, valid_v_n)
+                q_c, v_self, v_next = aligned
+                if q_c is None:
+                    continue
+                q_arr = np.asarray(q_c, dtype=np.float64)
+                vs = np.asarray(v_self, dtype=np.float64)
+                vn = np.asarray(v_next, dtype=np.float64)
+                n = max(256, len(q_c) * 64)
+                xf = np.linspace(q_arr[0], q_arr[-1], n)
+                lo_f = np.interp(xf, q_arr, vs)
+                # 上界 = min(Perfect CSI, 下一档 utility 的连续折线)，与 plot(valid_q_n,v_n) 一致
+                vn_f = np.interp(xf, q_arr, vn)
+                hi_f = np.minimum(ub_self, vn_f)
+                ax.fill_between(
+                    xf, lo_f, hi_f,
+                    where=(lo_f < hi_f),
+                    color=color, alpha=0.18, zorder=0,
+                    linewidth=0,
+                    antialiased=False,
+                )
+            else:
+                q_arr = np.asarray(valid_q, dtype=np.float64)
+                vv = np.asarray(valid_v, dtype=np.float64)
+                n = max(256, len(valid_q) * 64)
+                xf = np.linspace(q_arr[0], q_arr[-1], n)
+                lo_f = np.interp(xf, q_arr, vv)
+                hi_f = np.full_like(xf, ub_self)
+                ax.fill_between(
+                    xf, lo_f, hi_f,
+                    where=(lo_f < hi_f),
+                    color=color, alpha=0.18, zorder=0,
+                    linewidth=0,
+                    antialiased=False,
+                )
+
+    # ── 图例 ────────────────────────────────────────────────────────────────
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles=handles + ref_handles,
+        labels=labels + ref_labels,
+        loc='lower right', fontsize=10,
+    )
+
+    ax.set_xlabel('Quantization Bits (bits)', fontsize=12)
+    ax.set_ylabel('Test Utility (Mbps)', fontsize=12)
+    ax.set_title('Test Utility vs. CSI Quantization', fontsize=12, fontweight='bold')
+    ax.set_xticks(q_bits)
+    ax.set_xticklabels([str(b) for b in q_bits], fontsize=10)
+    ax.set_xlim(x_min, x_max)
+    ax.grid(True, linestyle='--', alpha=0.3)
+
+    plt.tight_layout()
+
+    # ── 保存 ────────────────────────────────────────────────────────────────
+    eps_path = os.path.join(output_dir, 'csi_imperfection.eps')
+    png_path = os.path.join(output_dir, 'csi_imperfection.png')
+    plt.savefig(eps_path, format='eps', bbox_inches='tight')
+    plt.savefig(png_path, format='png', bbox_inches='tight', dpi=150)
+
+    if show:
+        plt.show()
+    plt.close()
+
+    print(f"  CSI Imperfection plot saved to:\n    {eps_path}\n    {png_path}")
+    return eps_path, png_path
+
+
 # ==================== 主函数 ====================
 
 def main():
@@ -536,7 +751,7 @@ def main():
     
     parser = argparse.ArgumentParser(description='生成实验结果图表')
     parser.add_argument('--plot', type=str, default='all',
-                       choices=['all', 'baseline', 'training', 'samples'],
+                       choices=['all', 'baseline', 'training', 'samples', 'csi'],
                        help='指定要绑制的图表类型')
     parser.add_argument('--results-dir', type=str, default='results',
                        help='结果目录')
@@ -553,14 +768,7 @@ def main():
     args = parser.parse_args()
     
     # 可选：更新配色方案
-    if args.colors == 'vibrant':
-        update_colors({
-            20: '#FF6B6B',  # 珊瑚红
-            30: '#4ECDC4',  # 青绿色
-            40: '#45B7D1',  # 天蓝色
-            50: '#96CEB4',  # 浅绿色
-        })
-    elif args.colors == 'v1':
+    if args.colors == 'v1':
         update_colors({
             20: '#0000FF',  # 深紫
             30: '#8080FF',  # 浅紫
@@ -569,10 +777,17 @@ def main():
         })
     elif args.colors == 'v2':
         update_colors({
-            20: '#478CCA',  # 浅粉色
-            30: '#757BBB',  # 浅绿色
-            40: '#F37B79',  # 浅蓝色
-            50: '#EE3223',  # 浅黄色
+            20: '#478CCA',  # 蓝
+            30: '#757BBB',  # 紫
+            40: '#F37B79',  # 粉
+            50: '#EE3223',  # 红
+        })
+    elif args.colors == 'v3':
+        update_colors({
+            20: '#9FBBD5',  # 蓝
+            30: '#304E7E',  # 紫
+            40: '#8A302E',  # 粉
+            50: '#E2745E',  # 红
         })
     
     output_dir = args.output_dir
@@ -613,6 +828,16 @@ def main():
     if args.plot in ['all', 'samples']:
         print("正在生成: 性能随样本数量变化图...")
         eps_path, png_path = plot_performance_vs_samples(
+            args.results_dir, output_dir=output_dir, show=args.show
+        )
+        if args.format in ['eps', 'both']:
+            print(f"EPS已保存到: {eps_path}")
+        if args.format in ['png', 'both']:
+            print(f"PNG已保存到: {png_path}")
+
+    if args.plot in ['all', 'csi']:
+        print("正在生成: CSI 不完美性实验图...")
+        eps_path, png_path = plot_csi_imperfection(
             args.results_dir, output_dir=output_dir, show=args.show
         )
         if args.format in ['eps', 'both']:

@@ -50,7 +50,7 @@ def main():
     parser.add_argument("--logs", default="./logs", help="Logs / models directory")
     parser.add_argument("--dry-run", action="store_true", help="Load config and do a dry-run (no long training)")
     parser.add_argument("--tx-power", type=float, help="Override TX_POWER (dBm)")
-    parser.add_argument("--use-quantized-distance", action="store_true", help="Override USE_QUANTIZED_DISTANCE true")
+    parser.add_argument("--csi-mode", choices=["perfect", "large_scale", "quantized"], help="Override CSI_MODE")
     parser.add_argument("--q-bits", type=int, help="Override Q_BITS")
     parser.add_argument("--train-size", type=int, help="Override TRAIN_SIZE")
     parser.add_argument("--lambda-sparsity", type=float, help="Override LAMBDA_SPARSITY")
@@ -66,8 +66,8 @@ def main():
     # apply CLI overrides if provided
     if args.tx_power is not None:
         cfg["TX_POWER"] = args.tx_power
-    if args.use_quantized_distance:
-        cfg["USE_QUANTIZED_DISTANCE"] = True
+    if args.csi_mode is not None:
+        cfg["CSI_MODE"] = args.csi_mode
     if args.q_bits is not None:
         cfg["Q_BITS"] = args.q_bits
     if args.train_size is not None:

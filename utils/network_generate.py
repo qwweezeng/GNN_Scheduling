@@ -139,13 +139,25 @@ class NetworkGenerator:
         self.queue_states += torch.poisson(torch.ones(self.num_uavs) * 0.5 * time_step)
 
     # 生成网络主函数，一定有很多问题，注意打断点查看
-    def generate_network(self, use_quantized_distance=False, q_bits=8):
+    # csi_mode: "perfect" | "large_scale" | "quantized"
+    def generate_network(self, csi_mode="perfect", q_bits=8):
         positions = self._init_positions()
         queue_states = self._generate_queue_states()
-        # node position -> link state
         dist, h, snr, large_scale = self._channel_gain(positions)
         snr_thres_beta = 10 ** (self.snr_thres / 10)
-        valid_links = snr >= snr_thres_beta
+
+        # 完美 CSI 接收功率；以及仅路径损耗的接收功率（不含小尺度衰落）
+        signal_power = self.tx_power * torch.abs(h) ** 2
+        large_scale_power = self.tx_power * (large_scale ** 2)
+        large_scale_power.fill_diagonal_(0.0)
+        snr_large_scale = large_scale_power / self.noise_power
+
+        # 链路存在性判定
+        if csi_mode in ("large_scale", "quantized"):
+            valid_links = snr_large_scale >= snr_thres_beta
+        else:
+            valid_links = snr >= snr_thres_beta
+
         src, dst = torch.where(valid_links)
         num_links = src.size(0)
         links = torch.stack([src, dst], dim=1)
@@ -154,42 +166,46 @@ class NetworkGenerator:
         vertex_features = []
         conflict_edges = []
         edge_weights = []
-        signal_power = self.tx_power * torch.abs(h) ** 2
-        # if using quantized distance, compute bin indices and representative bin-center distances,
-        # then estimate SNR from the representative distances using large-scale pathloss.
-        if use_quantized_distance:
+
+        # 量化距离时预计算估计 SNR 矩阵
+        if csi_mode == "quantized":
             d_min = self.min_distance
-            # max possible distance in the 3D bounding box:
-            # diagonal across area_width x area_width in x/y and height span in z
             height_span = self.height_max - self.height_min
             d_max = (self.area_width**2 + self.area_width**2 + height_span**2) ** 0.5
-            # compute normalized fraction and bin index matrix (vectorized)
             frac = (dist - d_min) / (d_max - d_min)
             frac = torch.clamp(frac, 0.0, 1.0)
             max_index = float(2**q_bits - 1)
             bin_index_mat = torch.floor(frac * max_index)
-            # dequantize: bin center -> representative distance
             quantized_dist_mat = dequantize_distance_from_binindex(bin_index_mat, q=q_bits, d_min=d_min, d_max=d_max)
             # estimate large-scale received power (no small-scale fading): P_rx ≈ tx_power * lambda0 * d^{-xi}
             power_est_matrix = self.tx_power * self.lambda0 * (quantized_dist_mat ** (-self.xi))
-            # estimate SNR from that power
             snr_est_matrix = power_est_matrix / self.noise_power
+
+        # 速率计算用哪个功率矩阵
+        if csi_mode == "large_scale":
+            rate_power = large_scale_power
+        elif csi_mode == "quantized":
+            rate_power = power_est_matrix
+        else:
+            rate_power = signal_power
 
         # calculate vertex feature and edge weight
         for u_idx in range(num_links):
             u_tx, u_rx = src[u_idx].item(), dst[u_idx].item()
             # vertex feature
-            if use_quantized_distance:
-                # Use estimated SNR from quantized (bin-center) distance
+            if csi_mode == "quantized":
                 snr_val = snr_est_matrix[u_tx, u_rx].item()
-                vertex_features.append([10 * np.log10(snr_val + 1e-12)])  # SNR in dB
+                vertex_features.append([10 * np.log10(snr_val + 1e-12)])
+            elif csi_mode == "large_scale":
+                snr_val = snr_large_scale[u_tx, u_rx].item()
+                vertex_features.append([10 * np.log10(snr_val + 1e-12)])
             else:
-                # Use instantaneous SNR as before (includes small-scale fading)
                 snr_val = snr[u_tx, u_rx].item()
-                vertex_features.append([10 * np.log10(snr_val + 1e-12)])  # 避免log(0)
+                vertex_features.append([10 * np.log10(snr_val + 1e-12)])
+
             # edge weight (interference)
             for v_idx in range(num_links):
-                if u_idx == v_idx:  # self loop
+                if u_idx == v_idx:
                     continue
                 v_tx, v_rx = src[v_idx].item(), dst[v_idx].item()
 
@@ -197,26 +213,24 @@ class NetworkGenerator:
                     conflict_edges.append([u_idx, v_idx])
                     edge_weights.append(1e5)
                 else:
-                    # interference from u to v
-                    # Compute using SNR estimates when quantized, otherwise use instantaneous powers
-                    if use_quantized_distance:
-                        # s_uv and s_vv are tensors (scalars)
-                        s_uv = float(snr_est_matrix[u_tx, v_rx].item())
-                        s_vv = float(snr_est_matrix[v_tx, v_rx].item())
-                        # weight form using SNR: w = SNR_uv / (SNR_vv / beta - 1)
-                        denom_snr_val = (s_vv / snr_thres_beta) - 1.0
-                        if denom_snr_val > 0.0 and s_uv > 0.0:
-                            weight_val = float(s_uv / denom_snr_val)
+                    # large_scale 与 quantized 都用 rate_power（区别仅在于距离是否量化）
+                    # perfect 用 signal_power（含小尺度衰落）
+                    if csi_mode in ("large_scale", "quantized"):
+                        interfere_power = float(rate_power[u_tx, v_rx].item())
+                        denom = float(rate_power[v_tx, v_rx].item()) / snr_thres_beta - float(self.noise_power)
+                        denom = max(denom, 1e-30)
+                        if denom <= interfere_power:
+                            weight_val = float(interfere_power / denom)
                             conflict_edges.append([u_idx, v_idx])
                             edge_weights.append(weight_val)
                     else:
                         interfere_power = float(signal_power[u_tx, v_rx].item())
                         denom = float(signal_power[v_tx, v_rx].item()) / snr_thres_beta - float(self.noise_power)
-                    denom = max(denom, 1e-30)
-                    if denom <= interfere_power:
-                        weight_val = float(interfere_power / denom)
-                        conflict_edges.append([u_idx, v_idx])
-                        edge_weights.append(weight_val)
+                        denom = max(denom, 1e-30)
+                        if denom <= interfere_power:
+                            weight_val = float(interfere_power / denom)
+                            conflict_edges.append([u_idx, v_idx])
+                            edge_weights.append(weight_val)
 
         # to tensor - stack the feature vectors
         # Normalize vertex_features into a single tensor regardless of how items were appended.
@@ -246,7 +260,9 @@ class NetworkGenerator:
             v = edge_index[1, i].item()
             neighbor_map[v].append(u)
 
-        # return links, vertex_features, edge_index, edge_weights, large_scale[src, dst], neighbor_map
+        # 量化功率矩阵（仅 csi_mode=="quantized" 时有效；其余模式设为 None）
+        power_quant = power_est_matrix if csi_mode == "quantized" else None
+
         return NetworkState(
             links=links,
             vertex_features=vertex_features,
@@ -254,6 +270,8 @@ class NetworkGenerator:
             edge_weights=edge_weights,
             large_scale=large_scale[src, dst],
             signal_power=signal_power,
+            signal_power_large_scale=large_scale_power,
+            signal_power_quant=power_quant,
             noise_power=self.noise_power,
             bandwidth=self.bandwidth,
             snr_gap=self.snr_gap,
@@ -261,6 +279,7 @@ class NetworkGenerator:
             positions=positions,
             tx_power=self.tx_power,
             carrier_f=self.carrier_f,
+            csi_mode=csi_mode,
         )
 
     def visualize_network(self, state, save_path=None):
@@ -530,19 +549,22 @@ class NetworkGenerator:
         return fig, active_mask
 
 class NetworkState:
-    __slots__ = ['links', 'vertex_features', 'edge_index', 'edge_weights','large_scale',
-                 'signal_power', 'noise_power', 'bandwidth', 'snr_gap', 'neighbor_map',
-                 'positions', 'num_vertices', 'tx_power', 'carrier_f']
+    __slots__ = ['links', 'vertex_features', 'edge_index', 'edge_weights', 'large_scale',
+                 'signal_power', 'signal_power_large_scale', 'signal_power_quant',
+                 'noise_power', 'bandwidth', 'snr_gap', 'neighbor_map',
+                 'positions', 'num_vertices', 'tx_power', 'carrier_f', 'csi_mode']
     def __init__(self, links, vertex_features, edge_index, edge_weights,
-                 large_scale, signal_power, noise_power, bandwidth, snr_gap, 
-                 neighbor_map, positions, tx_power=None, carrier_f=None):
-        # 核心数据
+                 large_scale, signal_power, signal_power_large_scale, signal_power_quant,
+                 noise_power, bandwidth, snr_gap, 
+                 neighbor_map, positions, tx_power=None, carrier_f=None, csi_mode="perfect"):
         self.links = links
         self.vertex_features = vertex_features
         self.edge_index = edge_index
         self.edge_weights = edge_weights
         self.large_scale = large_scale
         self.signal_power = signal_power
+        self.signal_power_large_scale = signal_power_large_scale
+        self.signal_power_quant = signal_power_quant
         self.noise_power = noise_power
         self.bandwidth = bandwidth
         self.snr_gap = snr_gap

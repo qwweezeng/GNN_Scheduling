@@ -78,7 +78,7 @@ def get_all_numuav_colors() -> dict:
 
 def update_colors(new_colors: dict):
     """更新配色方案
-    
+
     Args:
         new_colors: 新的配色字典，例如 {'20': '#FF0000', '30': '#00FF00'}
     """

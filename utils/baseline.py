@@ -89,6 +89,8 @@ def prune_state(state, keep_indices):
         edge_weights=edge_weights,
         large_scale=state.large_scale[keep_indices] if hasattr(state, "large_scale") else None,
         signal_power=state.signal_power,
+        signal_power_large_scale=getattr(state, "signal_power_large_scale", state.signal_power),
+        signal_power_quant=getattr(state, "signal_power_quant", None),
         noise_power=state.noise_power,
         bandwidth=state.bandwidth,
         snr_gap=getattr(state, 'snr_gap', 1.0),
@@ -96,6 +98,7 @@ def prune_state(state, keep_indices):
         positions=state.positions,
         tx_power=getattr(state, 'tx_power', None),
         carrier_f=getattr(state, 'carrier_f', None),
+        csi_mode=getattr(state, 'csi_mode', 'perfect'),
     )
     return pruned_state
 

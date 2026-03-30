@@ -217,7 +217,7 @@ def run_paired_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
                 test_cfg["DATASET_CACHE_PATH"] = cache_path
                 test_runner = ExperimentRunner(test_cfg, gpu_id=gpu_id)
                 # 只生成数据，不训练
-                from main import generate_dataset
+                from utils.io import generate_dataset
                 from utils.network_generate import NetworkGenerator
                 height_range = test_cfg.get("HEIGHT_RANGE", (50, 150))
                 gen = NetworkGenerator(
@@ -234,13 +234,13 @@ def run_paired_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
                     noise_psd=test_cfg.get("NOISE_PSD", -169),
                     snr_gap_db=test_cfg.get("SNR_GAP_DB", 0)
                 )
-                use_quantized_distance = test_cfg.get("USE_QUANTIZED_DISTANCE", False)
+                csi_mode = test_cfg.get("CSI_MODE", "perfect")
                 q_bits = test_cfg.get("Q_BITS", 8)
                 test_set = generate_dataset(
                     test_cfg.get("TEST_SIZE", 20), gen,
                     batch_size=test_cfg.get("GEN_BATCH_SIZE", 50),
-                    use_quantized_distance=use_quantized_distance,
-                    q_bits=q_bits
+                    csi_mode=test_cfg.get("CSI_MODE", "perfect"),
+                    q_bits=q_bits,
                 )
             else:
                 with open(cache_path, "rb") as f:

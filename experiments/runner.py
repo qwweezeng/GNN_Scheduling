@@ -6,8 +6,7 @@ import pickle as pkl
 
 from utils.network_generate import NetworkGenerator
 from models.model import GATScheduler
-from utils.io import save_experiment_results
-from main import generate_dataset
+from utils.io import save_experiment_results, generate_dataset
 from train.trainer import Trainer
 from utils.baseline import eval_baseline
 import json
@@ -49,11 +48,10 @@ class ExperimentRunner:
             snr_gap_db=p.get("SNR_GAP_DB", 0)       # 0 dB = 无gap（与基线一致）
         )
 
-        # datasets: check for cached dataset first, or generate new ones
-        # 获取量化参数
-        use_quantized_distance = p.get("USE_QUANTIZED_DISTANCE", False)
+        # CSI 模式：统一控制模型输入 + 速率计算
+        csi_mode = p.get("CSI_MODE", "perfect")
         q_bits = p.get("Q_BITS", 8)
-        print(f"[runner] Using quantization: {use_quantized_distance}, q_bits: {q_bits}")
+        print(f"[runner] CSI_MODE={csi_mode}, Q_BITS={q_bits}")
 
         cache_path = p.get("DATASET_CACHE_PATH")
 
@@ -91,20 +89,20 @@ class ExperimentRunner:
             train_set = generate_dataset(
                 p.get("TRAIN_SIZE", 200), gen,
                 batch_size=p.get("GEN_BATCH_SIZE", 50),
-                use_quantized_distance=use_quantized_distance,
-                q_bits=q_bits
+                csi_mode=csi_mode,
+                q_bits=q_bits,
             )
             val_set = generate_dataset(
                 p.get("VAL_SIZE", 20), gen,
                 batch_size=p.get("GEN_BATCH_SIZE", 50),
-                use_quantized_distance=use_quantized_distance,
-                q_bits=q_bits
+                csi_mode=csi_mode,
+                q_bits=q_bits,
             )
             test_set = generate_dataset(
                 p.get("TEST_SIZE", 20), gen,
                 batch_size=p.get("GEN_BATCH_SIZE", 50),
-                use_quantized_distance=use_quantized_distance,
-                q_bits=q_bits
+                csi_mode=csi_mode,
+                q_bits=q_bits,
             )
             print(f"[runner] Generated datasets: train={len(train_set)}, val={len(val_set)}, test={len(test_set)}")
 
@@ -162,8 +160,10 @@ class ExperimentRunner:
         # Auto-detect GPU if no device specified in params
         default_device = None  # Let Trainer handle device detection
         device_param = p.get("DEVICE", default_device)
-        trainer = Trainer(model, optimizer, device=device_param, gpu_id=self.gpu_id, log_dir=self.log_dir,
-                          grad_clip_config=p.get("GRAD_CLIP_CONFIG", None))
+        trainer = Trainer(
+            model, optimizer, device=device_param, gpu_id=self.gpu_id, log_dir=self.log_dir,
+            grad_clip_config=p.get("GRAD_CLIP_CONFIG", None),
+        )
         # read lambda parameters (no backward compatibility with old keys)
         lambda_sparsity = p.get("LAMBDA_SPARSITY", 0.01)
         lambda_conflict = p.get("LAMBDA_CONFLICT", 0.1)
@@ -189,8 +189,8 @@ class ExperimentRunner:
             experiment_group = p.get("EXPERIMENT_GROUP", "default")
             if experiment_group == "convergence_analysis":
                 excel_sheet = "Sheet2"  # 收敛性分析实验
-            elif experiment_group == "quantization_analysis":
-                excel_sheet = "Sheet3"  # 量化分析实验
+            elif experiment_group in ("csi_imperfection"):
+                excel_sheet = "Sheet3"  # CSI 不完美性实验
             else:
                 excel_sheet = "Sheet1"  # 默认参数选择实验
         info = save_experiment_results(trained, train_set, test_util, p, results_dir=self.results_dir, log_dir=self.log_dir, excel_sheet=excel_sheet)
