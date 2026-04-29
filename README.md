@@ -41,6 +41,138 @@ pip install torch numpy matplotlib networkx tensorboard pyyaml pandas openpyxl
 | 画图           | `utils.plot_paper`                   | 生成所有论文图表                   |
 | TensorBoard    | `tensorboard --logdir=./logs/`       | 可视化训练曲线                     |
 
+
+## 队列感知仿真（Queue-aware Simulation）
+
+### 目的
+
+研究在**多时隙队列动态**下的调度性能。评估指标包括：
+- 队列长度轨迹（是否发散）
+- 吞吐量稳定性
+- 长期平均效用
+
+### 仿真模型
+
+**信道模型（块衰落）：**
+- 默认：整个仿真周期信道保持不变
+- 可配置：每 N 个时隙更新一次信道（用于长记忆仿真）
+
+**队列更新公式：**
+$$D_i(t) = \pi_i(t) \times R_i(t) \times B \times \tau / L$$
+
+$$Q_i(t+1) = \max(0, Q_i(t) - D_i(t)) + A_i(t)$$
+
+其中：
+- $R_i(t)$：可达速率（bps/Hz）
+- $B$：带宽（Hz）
+- $\tau$：时隙长度（秒）
+- $L$：包大小（bits）
+- $A_i(t) \sim \text{Poisson}(\lambda)$：新到达的包数
+
+**单位说明：**
+- `arrival_lambda`：泊松到达均值（**packets/slot**）
+- `slot_duration`：时隙长度（秒）
+- `packet_size`：包大小（bits）
+- 队列状态和发送量单位都是 **packets**
+
+### 常用参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--arrival_lambda` | 泊松到达率（packets/slot） | `0.5` |
+| `--slot_duration` | 时隙长度（秒） | `0.001` (1ms) |
+| `--packet_size` | 包大小（bits） | `12000` |
+| `--num_slots` | 仿真时隙数 | `5000` |
+| `--arrival_rates` | 要测试的到达率列表 | `0.1,0.3,0.5...` |
+
+### 配置文件选项
+
+```yaml
+# 队列感知仿真参数
+USE_QUEUE: true                 # 启用队列感知
+ARRIVAL_LAMBDA: 0.5            # 到达率（packets/slot）
+SLOT_DURATION: 0.001           # 时隙长度（秒）
+PACKET_SIZE: 12000             # 包大小（bits）
+```
+
+### 示例
+
+```bash
+# 队列感知实验
+uv run python -m experiments.run_queue_experiment \
+    --num_uav 30 --train_size 300 --arrival_lambda 0.5 \
+    --num_slots 5000 --seed 42 --gpu-id 0
+
+# 测试不同到达率
+uv run python -m experiments.run_queue_experiment \
+    --arrival_rates 0.1,0.3,0.5,0.7,1.0 --num_slots 3000
+```
+
+---
+
+## 功率控制实验（power_control_experiment）
+
+### 目的
+
+在密集无人机网络中引入功率控制，实现**调度-功率联合优化**。通过 GAT 的双头输出架构同时学习链路激活概率 $\pi_i$ 和功率缩放系数 $\alpha_i \in (0,1]$，最终发射功率为 $P_i = \pi_i \cdot \alpha_i \cdot P_{\max}$。
+
+### 核心设计
+
+| 组件 | 说明 |
+|------|------|
+| **$\pi$ head (调度)** | Sigmoid → {0,1}，决定链路是否激活 |
+| **$\alpha$ head (功率)** | Sigmoid → (0,1]，控制功率缩放系数 |
+| **功率惩罚项** | $\lambda_{\alpha} \cdot (1 - \text{mean}(\alpha))$，鼓励降低功率 |
+| **$\alpha$ 平滑惩罚** | 相邻链路功率差异惩罚，促进均匀功率分配 |
+
+### 常用参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--mode` | 实验模式：`compare`（对比）/ `power-control-only`（仅功率控制）/ `grid-search`（网格搜索） | `compare` |
+| `--power-penalty` | $\lambda_{\text{power\_penalty}}$ 功率惩罚系数 | `0.01` |
+| `--power-penalty-search` | 网格搜索的 $\lambda$ 值列表 | `0.001 0.01 0.05 0.1` |
+
+### 输出指标
+
+- **test_util**：测试集总吞吐量
+- **alpha_mean**：平均功率缩放系数（越小表示降功率越多）
+- **pi_mean**：平均链路激活率
+
+### 示例
+
+```bash
+# 对比实验（有 vs 无功率控制）
+uv run python experiments/power_control_experiment.py --num-uav 50 --train-size 300 --gpu-id 0
+
+# 仅运行功率控制模式
+uv run python experiments/power_control_experiment.py --num-uav 50 --train-size 300 \
+    --mode power-control-only --power-penalty 0.05
+
+# 网格搜索最优 λ
+uv run python experiments/power_control_experiment.py --num-uav 30 --train-size 100 \
+    --mode grid-search --power-penalty-search 0.001 0.01 0.05 0.1 0.5
+```
+
+### 配置文件选项
+
+在 `configs/exp_example.yaml` 中设置：
+
+```yaml
+# 启用功率控制
+USE_POWER_CONTROL: true
+
+# 功率惩罚系数（越小越鼓励降功率）
+LAMBDA_POWER_PENALTY: 0.01
+
+# α 平滑惩罚系数（鼓励相邻链路功率接近）
+LAMBDA_ALPHA_SMOOTH: 0.0
+
+# 功率头隐藏层维度
+POWER_HIDDEN_DIM: 16
+```
+
+
 ---
 
 ## 1. 单次训练与评估
@@ -209,36 +341,7 @@ uv run python -m experiments.convergence_analysis --gpu-id 0
 
 ---
 
-## 5. 超参数网格搜索（`grid_search_lambda`）
-
-### 目的
-
-在 numUAV=50 上，对 `LAMBDA_SPARSITY` 和 `LAMBDA_CONFLICT` 进行网格搜索，找到最优的正则化权重组合。
-
-### 常用参数
-
-
-| 参数       | 说明                | 默认值                                 |
-| ------------ | --------------------- | ---------------------------------------- |
-| `--config` | 基础配置文件        | 必选                                   |
-| `--out`    | 汇总 Excel 输出路径 | `experiments/grid_lambda_results.xlsx` |
-| `--seed`   | 随机种子            | `42`                                   |
-| `--gpu-id` | GPU 编号            | `0`                                    |
-
-### 输出文件
-
-- `experiments/grid_lambda_results.xlsx`：各 (λ_sparsity, λ_conflict) 组合的 test utility
-
-### 示例
-
-```bash
-uv run python experiments/grid_search_lambda.py \
-    --config configs/exp_example.yaml --seed 42 --gpu-id 0
-```
-
----
-
-## 6. 可视化（`utils.plot_paper`）
+## 5. 可视化（`utils.plot_paper`）
 
 ### 目的
 
@@ -308,11 +411,16 @@ GNN_Scheduling/
 │
 ├── experiments/
 │   ├── runner.py                # ExperimentRunner：实验编排器
+│   ├── run_queue_experiment.py  # 队列感知调度实验
 │   ├── csi_imperfection_study.py # CSI 不完美性实验
 │   ├── scaling_experiment.py    # 跨尺度扩展性实验
 │   ├── convergence_analysis.py  # 收敛性分析
-│   ├── grid_search_lambda.py     # 超参数网格搜索
-│   └── compare_*.py             # 辅助对比脚本
+│   └── power_control_experiment.py # 功率控制实验
+│
+├── simulator/                   # 仿真器模块
+│   ├── __init__.py             # 模块说明文档
+│   ├── base.py                 # BaseSimulator、SimpleSimulator
+│   └── queue_simulator.py      # QueueSimulator：队列感知仿真器
 │
 ├── train/
 │   └── trainer.py               # 训练循环、梯度裁剪、早停
@@ -376,8 +484,6 @@ GNN_Scheduling/
 | `TRAIN_SIZE / VAL_SIZE / TEST_SIZE` | 数据集划分                               |
 | `EPOCHS`                            | 训练轮数                                 |
 | `LR`                                | 学习率                                   |
-| `LAMBDA_SPARSITY`                   | 稀疏性惩罚（防止"全部激活"局部最优）     |
-| `LAMBDA_CONFLICT`                   | 冲突惩罚（直接惩罚高干扰链路对同时激活） |
 | `NUM_GAT_LAYERS`                    | GAT 层数（消息传递迭代次数）             |
 | `SEED`                              | 随机种子（实验复现）                     |
 

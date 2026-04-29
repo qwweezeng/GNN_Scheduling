@@ -53,8 +53,6 @@ def main():
     parser.add_argument("--csi-mode", choices=["perfect", "large_scale", "quantized"], help="Override CSI_MODE")
     parser.add_argument("--q-bits", type=int, help="Override Q_BITS")
     parser.add_argument("--train-size", type=int, help="Override TRAIN_SIZE")
-    parser.add_argument("--lambda-sparsity", type=float, help="Override LAMBDA_SPARSITY")
-    parser.add_argument("--lambda-conflict", type=float, help="Override LAMBDA_CONFLICT")
     parser.add_argument("--gpu-id", type=int, default=None, help="GPU ID to use (overrides GPU_ID in config, default: from config)")
     parser.add_argument("--group", help="Experiment group (overrides EXPERIMENT_GROUP)")
     parser.add_argument("--notes", help="Experiment notes (overrides NOTES)")
@@ -72,10 +70,6 @@ def main():
         cfg["Q_BITS"] = args.q_bits
     if args.train_size is not None:
         cfg["TRAIN_SIZE"] = args.train_size
-    if args.lambda_sparsity is not None:
-        cfg["LAMBDA_SPARSITY"] = args.lambda_sparsity
-    if args.lambda_conflict is not None:
-        cfg["LAMBDA_CONFLICT"] = args.lambda_conflict
     if args.group is not None:
         cfg["EXPERIMENT_GROUP"] = args.group
     if args.notes is not None:

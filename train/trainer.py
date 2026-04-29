@@ -5,13 +5,16 @@ import numpy as np
 import torch
 from torch.utils.tensorboard import SummaryWriter
 
-from models.model import calculate_achievable_rate, compute_conflict_penalty
+from models.model import calculate_achievable_rate
 from utils.baseline import eval_baseline
 
 class Trainer:
-    def __init__(self, model, optimizer, device=None, gpu_id=None, log_dir="./logs", grad_clip_config=None):
+    def __init__(self, model, optimizer, device=None, gpu_id=None, log_dir="./logs",
+                 grad_clip_config=None, use_power_control=False, use_queue=False):
         self.model = model
         self.optimizer = optimizer
+        self.use_power_control = use_power_control
+        self.use_queue = use_queue  # 是否启用队列感知训练（MWS加权loss）
 
         # Auto-detect GPU if no device specified or device is "auto"
         if device is None or device == "auto":
@@ -39,31 +42,50 @@ class Trainer:
             }
         self.grad_clip_config = grad_clip_config
 
-    def evaluate(self, model, dataset, device=None):
+    def evaluate(self, model, dataset, device=None, use_power_control=False, use_queue=False):
         if device is None:
             device = self.device
         model.eval()
         model.to(device)
         total_util = 0.0
+        total_avg_alpha = 0.0
         with torch.no_grad():
             np.random.shuffle(dataset)
             for state in dataset:
                 x = state.vertex_features.to(device)
                 edge_index = state.edge_index.to(device)
                 edge_weights = state.edge_weights.to(device)
-                pi, _ = model(x, edge_index, edge_weights, use_ste=False)
-                rates = calculate_achievable_rate(pi, state, binary=True, detach_hard=True)
-                # Q = x[:, 1]
-                Q = 1
-                util = torch.sum(Q * rates).item()
+                result = model(x, edge_index, edge_weights, use_ste=False)
+                if use_power_control:
+                    pi, alpha, _ = result
+                    rates = calculate_achievable_rate(pi, state, binary=True, detach_hard=True, alpha=alpha)
+                    total_avg_alpha += alpha.mean().item()
+                else:
+                    pi, _ = result
+                    rates = calculate_achievable_rate(pi, state, binary=True, detach_hard=True)
+                
+                # 队列感知评估
+                if use_queue:
+                    if hasattr(state, 'queue_states'):
+                        Q = state.queue_states.to(device)
+                    else:
+                        Q = torch.ones(state.num_vertices, device=device)
+                    util = torch.sum(Q * rates).item()
+                else:
+                    util = torch.sum(rates).item()
                 total_util += util
         avg_util = total_util / len(dataset) if len(dataset) > 0 else 0.0
+        avg_alpha = total_avg_alpha / len(dataset) if len(dataset) > 0 else 1.0
+        if use_power_control:
+            return avg_util, avg_alpha
         return avg_util
 
     def train(self, num_epochs, train_dataset, val_dataset,
-              lambda_sparsity=0.01, eval_interval=10,
-              lambda_conflict=0.1, conflict_warmup_epochs=5,
-              lr_scheduler=None):
+              eval_interval=10,
+              lr_scheduler=None, use_power_control=False, use_queue=None):
+        # 如果传入None，使用实例级别的use_queue设置
+        if use_queue is None:
+            use_queue = self.use_queue
         model = self.model
         optimizer = self.optimizer
         device = self.device
@@ -93,45 +115,49 @@ class Trainer:
             random.shuffle(train_dataset)
             pi_means = []
             pi_stds = []
+            alpha_means = []
             grad_norms = []
-            conflict_penalties = []
             utility_terms = []
-            sparsity_penalties = []
 
             for state in train_dataset:
                 x = state.vertex_features.to(device)
                 edge_index = state.edge_index.to(device)
                 edge_weights = state.edge_weights.to(device)
-                # forward and backward (simplified, single path)
-                pi, _ = model(x, edge_index, edge_weights, use_ste=False)
+                # forward and backward
+                result = model(x, edge_index, edge_weights, use_ste=False)
+                if use_power_control:
+                    pi, alpha, _ = result
+                    alpha_means.append(alpha.mean().item())
+                    rates = calculate_achievable_rate(pi, state, binary=False, alpha=alpha)
+                else:
+                    pi, _ = result
+                    alpha = None
+                    rates = calculate_achievable_rate(pi, state, binary=False)
+
                 pi_means.append(pi.mean().item())
                 pi_stds.append(pi.std().item())
-                rates = calculate_achievable_rate(pi, state, binary=False)  # 训练阶段使用软概率保持梯度
                 
-                # Q = x[:, 1]  # 队列长度
-                Q = 1  # 先不加入考虑队列长度
-                mean_pi = torch.mean(pi)
-                # normalized sparsity penalty = lambda_sparsity * mean(pi)
-                sparsity_penalty = lambda_sparsity * mean_pi
-
-                # Warmup for conflict penalty
-                if epoch < conflict_warmup_epochs:
-                    warmup_factor = (epoch + 1) / conflict_warmup_epochs
-                    current_penalty_scale = lambda_conflict * warmup_factor
+                # 队列感知MWS加权
+                if self.use_queue:
+                    # 从 vertex_features 提取归一化队列（第二维）
+                    # vertex_features 格式: [SNR_dB, queue_normalized]
+                    queue_norm = x[:, 1].clone()  # [num_links]
+                    
+                    # 转换回原始队列长度用于加权
+                    # queue_normalized = log1p(queue) / 10 => queue = expm1(queue_normalized * 10) - 1
+                    Q_raw = torch.expm1(queue_norm * 10.0) - 1.0
+                    Q_raw = torch.clamp(Q_raw, min=0.0)
+                    
+                    # 或者直接从 state.queue_states 获取（更准确）
+                    if hasattr(state, 'queue_states'):
+                        Q_raw = state.queue_states.to(device)
+                    
+                    # MWS目标: 最大化 sum(Q_i * R_i)
+                    utility_term = torch.sum(Q_raw * rates)
                 else:
-                    current_penalty_scale = lambda_conflict
-                conflict_penalty = compute_conflict_penalty(
-                    pi, edge_index, edge_weights,
-                    penalty_scale=current_penalty_scale,
-                    normalize=True
-                )
-
-                utility_term = torch.sum(Q * rates)
-                sparsity_penalties.append(sparsity_penalty.item())
-                conflict_penalties.append(conflict_penalty.item())
-                # use unified, normalized name 'sparsity_penalty' for the sparsity regularizer term
-                loss = -utility_term + sparsity_penalty + conflict_penalty
-                # loss = -utility_term
+                    utility_term = torch.sum(rates)
+                
+                loss = -utility_term
                 
                 optimizer.zero_grad()
                 loss.backward()
@@ -153,8 +179,6 @@ class Trainer:
 
             avg_loss = epoch_loss / len(train_dataset) if len(train_dataset) > 0 else 0.0
             avg_utility_term = np.mean(utility_terms) if utility_terms else 0.0
-            avg_sparsity_penalty = np.mean(sparsity_penalties) if sparsity_penalties else 0.0
-            avg_conflict_penalty = np.mean(conflict_penalties) if conflict_penalties else 0.0
 
             writer.add_scalar("train_loss", avg_loss, epoch)
             writer.add_scalar("pi_mean", np.mean(pi_means) if pi_means else 0.0, epoch)
@@ -163,17 +187,26 @@ class Trainer:
             avg_pi_mean = float(np.mean(pi_means)) if pi_means else 0.0
             avg_pi_std = float(np.mean(pi_stds)) if pi_stds else 0.0
             print(f"[Epoch {epoch}] pi_mean={avg_pi_mean:.4f}, pi_std={avg_pi_std:.4f}, grad_norm={np.mean(grad_norms):.4f}")
+            if use_power_control:
+                avg_alpha_mean = float(np.mean(alpha_means)) if alpha_means else 1.0
+                print(f"  alpha_mean={avg_alpha_mean:.4f}", end="")
             writer.add_scalar("grad_norm", np.mean(grad_norms) if grad_norms else 0.0, epoch)
             writer.add_scalar("utility_term", avg_utility_term, epoch)
-            writer.add_scalar("sparsity_penalty", avg_sparsity_penalty, epoch)
-            writer.add_scalar("conflict_penalty", avg_conflict_penalty, epoch)
+            if use_power_control:
+                avg_alpha_mean = float(np.mean(alpha_means)) if alpha_means else 1.0
+                writer.add_scalar("alpha_mean", avg_alpha_mean, epoch)
 
             current_lr = optimizer.param_groups[0]['lr']
             writer.add_scalar("learning_rate", current_lr, epoch)
 
             # evaluate
             if (epoch + 1) % eval_interval == 0 or epoch == num_epochs - 1:
-                eval_util = self.evaluate(model, val_dataset, device=device)
+                eval_result = self.evaluate(model, val_dataset, device=device, use_power_control=use_power_control, use_queue=(use_queue or self.use_queue))
+                if use_power_control:
+                    eval_util, eval_alpha = eval_result
+                else:
+                    eval_util = eval_result
+                    eval_alpha = 1.0
                 # run expensive baselines only at epoch 0 (quick-run mode)
                 results = {}
                 # if epoch == 0:
@@ -183,6 +216,7 @@ class Trainer:
                 # else:
                 #     results = {}
                 writer.add_scalar("val_utility", eval_util, epoch)
+                writer.add_scalar("val_alpha", eval_alpha, epoch)
                 current_lr = optimizer.param_groups[0]['lr']
                 # lr scheduler step
                 if lr_scheduler is not None:
@@ -213,11 +247,13 @@ class Trainer:
                     except Exception as e:
                         print(f"[Trainer] Failed to save best model: {e}")
 
-                print(f"[Epoch {epoch}] Train Loss: {avg_loss:.4f} | Utility: {avg_utility_term:.4f} | "
-                      f"Sparsity: {avg_sparsity_penalty:.6f} | Conflict: {avg_conflict_penalty:.6f} | "
-                      f"Val Utility: {eval_util:.2f} | Random: {results.get('random',0):.2f} | "
-                      f"Simple: {results.get('simple_greedy',0):.2f} | LGS: {results.get('local_greedy',0):.2f} | "
-                      f"GSp: {results.get('greedy_spatial',0):.2f} | FPLinQ: {results.get('fplinq',0):.2f} | LR: {current_lr:.6f}")
+                if use_power_control:
+                    print(f"[Epoch {epoch}] Train Loss: {avg_loss:.4f} | Utility: {avg_utility_term:.4f} | "
+                          f"Alpha: {avg_alpha_mean:.4f} | "
+                          f"Val Utility: {eval_util:.2f} | Val Alpha: {eval_alpha:.4f} | LR: {current_lr:.6f}")
+                else:
+                    print(f"[Epoch {epoch}] Train Loss: {avg_loss:.4f} | Utility: {avg_utility_term:.4f} | "
+                          f"Val Utility: {eval_util:.2f} | LR: {current_lr:.6f}")
             else:
                 print(f"[Epoch {epoch}] Train Loss: {avg_loss:.4f} | Utility: {avg_utility_term:.4f} | LR: {current_lr:.6f}")
 
@@ -226,13 +262,13 @@ class Trainer:
                 "train_loss": float(avg_loss),
                 "pi_mean": float(np.mean(pi_means)) if pi_means else None,
                 "pi_std": float(np.mean(pi_stds)) if pi_stds else None,
+                "alpha_mean": float(np.mean(alpha_means)) if alpha_means and any(alpha_means) else None,
                 "grad_norm_mean": float(np.mean(grad_norms)) if grad_norms else None,
                 "grad_norm_max": float(np.max(grad_norms)) if grad_norms else None,
                 "utility": float(avg_utility_term),
-                "sparsity_penalty": float(avg_sparsity_penalty),
-                "conflict_penalty": float(avg_conflict_penalty),
                 "learning_rate": float(current_lr),
-                "val_utility": float(eval_util) if 'eval_util' in locals() else None
+                "val_utility": float(eval_util) if 'eval_util' in locals() else None,
+                "val_alpha": float(eval_alpha) if 'eval_alpha' in locals() else None
             }
             per_epoch_logs.append(epoch_log)
 

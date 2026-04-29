@@ -24,6 +24,13 @@ from utils.plot_config import (
 # 设置画图风格
 plt.rcParams.update(PLOT_STYLE)
 
+# 解决 EPS 中 Type 3 字体问题（会议投稿不允许 Type 3）
+# fonttype=42 即 TrueType，嵌入后无 Type 3 警告
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+# 将文字转为路径，避免依赖外部字体文件
+plt.rcParams['text.usetex'] = False
+
 
 def smooth_curve(vals: List[float], window: int = None, method: str = None, 
                  ema_alpha: float = None) -> np.ndarray:

@@ -398,8 +398,6 @@ def run_mixed_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
             num_epochs=epochs,
             train_dataset=combined_train,
             val_dataset=combined_val,
-            lambda_sparsity=base_cfg.get("LAMBDA_SPARSITY", 0.01),
-            lambda_conflict=base_cfg.get("LAMBDA_CONFLICT", 0.1)
         )
         trained_model = trained["model"]
         best_val_util = trained["best_val_util"]

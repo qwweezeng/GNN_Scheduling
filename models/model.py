@@ -144,8 +144,11 @@ class GATLayer(nn.Module):
 class GATScheduler(nn.Module):
     def __init__(self, raw_node_dim, mlp_hidden_dims, embed_node_dim,
                  edge_dim, gat_out_dim, num_heads, T_iterations,
-                 schedule_hidden_dim=32, dropout=0.0):
+                 schedule_hidden_dim=32, dropout=0.0,
+                 use_power_control=False, power_hidden_dim=16):
         super().__init__()
+        self.use_power_control = use_power_control
+        self.power_hidden_dim = power_hidden_dim
         # Initial MLP for node embedding
         self.node_embed = NodeEmbedding(
             input_dim=raw_node_dim,
@@ -191,6 +194,21 @@ class GATScheduler(nn.Module):
         nn.init.xavier_uniform_(self.final_scheduler[0].weight, gain=0.3)  # 第一个Linear层
         nn.init.xavier_uniform_(self.final_scheduler[last_linear_idx].weight, gain=0.3)  # 最后一个Linear层
 
+        # ========== 功率控制双头 ==========
+        # 第二个头：功率缩放系数 α_i ∈ (0,1]
+        if self.use_power_control:
+            power_layers = [nn.Linear(gat_out_dim, power_hidden_dim), nn.ReLU()]
+            if dropout and dropout > 0.0:
+                power_layers.append(nn.Dropout(p=dropout))
+            power_layers.append(nn.Linear(power_hidden_dim, 1))
+            self.power_head = nn.Sequential(*power_layers)
+            # 初始化：让初始 α 接近 0.8（高功率基线，给模型更多降功率空间）
+            # sigmoid(score) = 0.8 时，score ≈ 1.39
+            power_last_linear_idx = len(power_layers) - 1
+            nn.init.constant_(self.power_head[power_last_linear_idx].bias, 1.39)
+            nn.init.xavier_uniform_(self.power_head[0].weight, gain=0.3)
+            nn.init.xavier_uniform_(self.power_head[power_last_linear_idx].weight, gain=0.3)
+
     def forward(self, x, edge_index, edge_attr, use_ste=False):
         """
         Args:
@@ -200,6 +218,7 @@ class GATScheduler(nn.Module):
             use_ste: 是否使用Straight-Through Estimator（训练时用硬决策，反向用软概率）
         Returns:
             pi: Scheduling probabilities [num_nodes, 1]，值域[0,1]
+            alpha: Power scaling factors [num_nodes, 1]，值域(0,1]（仅 use_power_control=True 模式）
             h_v_final: Final node embedding [num_nodes, gat_out_dim * num_heads]
         """
         h_v = self.node_embed(x)    # initial node embedding
@@ -227,7 +246,7 @@ class GATScheduler(nn.Module):
         pi_soft = pi_soft * (1 - 2 * eps) + eps
         
         if use_ste and self.training:
-            # 🔥 Straight-Through Estimator (STE):
+            # Straight-Through Estimator (STE):
             # 前向传播：使用硬决策（0/1）打破对称性
             # 反向传播：梯度通过软概率回传，保持可微
             pi_hard = (pi_soft > 0.5).float()  # 硬决策：>0.5为1，否则为0
@@ -235,14 +254,31 @@ class GATScheduler(nn.Module):
         else:
             # 评估时或不用STE：直接返回连续概率
             pi_v = pi_soft
-            
-        return pi_v, h_v_final
 
-def calculate_achievable_rate(pi, state, binary=True, detach_hard=False):
+        # ========== 功率控制输出 ==========
+        if self.use_power_control:
+            alpha_scores = self.power_head(h_v_final)  # [N, 1]
+            # 功率缩放：使用 sigmoid 确保 α ∈ (0,1)
+            # 训练时用温度缩放，评估时用原始 sigmoid
+            alpha_temp = 1.5 if self.training else 1.0
+            alpha = torch.sigmoid(alpha_scores / alpha_temp)  # [N, 1]，值域 (0,1)
+            # 夹紧到 (ε*0.5, 1-ε)，避免完全饱和
+            eps = 1e-3
+            alpha = alpha * (1 - eps) + eps * 0.5  # 最小约 0.0005
+            return pi_v, alpha, h_v_final
+        else:
+            return pi_v, h_v_final
+
+def calculate_achievable_rate(pi, state, binary=True, detach_hard=False, alpha=None):
     """
-    计算可达速率。
+    计算可达速率（支持功率控制）。
+
     signal_power / signal_power_large_scale / signal_power_quant 均存储在 state 中，
     由 generate_network 根据 CSI_MODE 统一计算并传入。
+
+    当 alpha 不为 None 时，启用功率控制模式：
+        P_i = π_i * α_i * P_max
+        干扰 = sum(g[j,i] * π_j * α_j) for j != i
     """
     num_links = state.num_vertices
     device = pi.device
@@ -292,66 +328,33 @@ def calculate_achievable_rate(pi, state, binary=True, detach_hard=False):
     mask = 1 - torch.eye(num_links, device=device)
     g_nondiag = g_matrix * mask
 
-    # 计算干扰功率
+    # ========== 功率控制模式 ==========
     pi_flat = pi_decision.squeeze(-1)  # [num_links]
-    interference_power = torch.matmul(g_nondiag, pi_flat)  # [num_links]
+    if alpha is not None:
+        # alpha 是功率缩放系数，使用 detach 的值避免梯度异常
+        alpha_decision = alpha.detach().squeeze(-1)  # [num_links]
+        effective_pi = pi_flat * alpha_decision
+        # 干扰 = sum(g[j,i] * π_j * α_j)
+        interference_power = torch.matmul(g_nondiag, effective_pi)  # [num_links]
+        # 信号功率需要乘以 α
+        g_diag_eff = g_diag * alpha_decision
+    else:
+        # 非功率控制模式：与原逻辑一致
+        interference_power = torch.matmul(g_nondiag, pi_flat)  # [num_links]
+        g_diag_eff = g_diag
 
-    # 计算 SINR
+    # 计算 SINR（使用有效信号功率）
     # 注意：不需要额外 epsilon，因为 noise_power > 0 已保证分母不为 0
-    sinr = g_diag / (interference_power + state.noise_power)
+    sinr = g_diag_eff / (interference_power + state.noise_power)
     
     # 计算速率: rate = log2(1 + SINR / SNR_gap) [每Hz的速率，不乘以带宽]
     # 这样可以保持数值稳定，便于训练
     snr_gap = getattr(state, 'snr_gap', 1.0)
-    # ✅ 修复：非激活链路的速率应该为 0
+    # 使用原始 pi_flat，而非 effective_pi
     achievable_rates = pi_flat * torch.log2(1 + sinr / snr_gap)
 
     return achievable_rates
 
-# ========== 方案1：冲突二次惩罚 ==========
-def compute_conflict_penalty(pi, edge_index, edge_weights, penalty_scale=1.0, normalize=True):
-    """
-    计算冲突二次惩罚项
-    
-    Args:
-        pi: [N, 1] 激活概率
-        edge_index: [2, E] 冲突边索引，edge_index[0]是源节点，edge_index[1]是目标节点
-        edge_weights: [E, 1] 冲突边权重（已经log归一化）
-        penalty_scale: 惩罚缩放因子，用于调整惩罚强度
-        normalize: 是否归一化（按链路数量），避免不同规模网络的惩罚项量级差异过大
-    
-    Returns:
-        conflict_penalty: 标量，冲突惩罚值
-    """
-    if edge_index.size(1) == 0:  # 没有冲突边
-        return torch.tensor(0.0, device=pi.device)
-    
-    src, dst = edge_index[0], edge_index[1]
-    pi_src = pi[src].squeeze(-1)  # [E]
-    pi_dst = pi[dst].squeeze(-1)  # [E]
-    
-    # 冲突惩罚：w_ij * π_i * π_j
-    # 如果两个冲突链路都激活（π_i≈1, π_j≈1），惩罚项会很大
-    # 如果其中一个关闭（π_i≈0或π_j≈0），惩罚项会很小
-    edge_weights_flat = edge_weights.squeeze(-1)  # [E]
-    
-    # 计算原始惩罚项
-    raw_penalty = torch.sum(edge_weights_flat * pi_src * pi_dst)
-    
-    # 🔥 关键改进：归一化到每个链路的平均惩罚，避免网络规模影响
-    if normalize:
-        num_links = pi.size(0)
-        if num_links > 0:
-            # 归一化：惩罚项 / 链路数量，让不同规模网络的惩罚项量级相似
-            normalized_penalty = raw_penalty / num_links
-        else:
-            normalized_penalty = raw_penalty
-    else:
-        normalized_penalty = raw_penalty
-    
-    conflict_penalty = normalized_penalty * penalty_scale
-    
-    return conflict_penalty
 
 # ========== 方案2：可微Top-K选择器（带冲突掩码） ==========
 def build_conflict_mask(edge_index, num_nodes):

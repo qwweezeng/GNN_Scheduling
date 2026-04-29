@@ -130,11 +130,23 @@ class ExperimentRunner:
         # fig_init.savefig("uav_network_init.png")
         # plt.show()
         
-        # model
+        # 功率控制开关
+        use_power_control = p.get("USE_POWER_CONTROL", False)
+        power_hidden_dim = p.get("POWER_HIDDEN_DIM", 16)
+        print(f"[runner] USE_POWER_CONTROL={use_power_control}")
+
+        # 队列感知开关
+        use_queue = p.get("USE_QUEUE", False)
+        print(f"[runner] USE_QUEUE={use_queue}")
+
         # Determine node input dimensionality.
-        # If user explicitly sets NODE_RAW_DIM in config, use it.
-        # Otherwise default to 1 (we use scalar SNR_est as node feature when quantized).
-        node_raw_dim = p.get("NODE_RAW_DIM") if p.get("NODE_RAW_DIM") is not None else 1
+        # 自动检测：如果 USE_QUEUE=True，则需要 2 维特征 [SNR, queue]
+        # 如果 USE_QUEUE=False，则只需要 1 维特征 [SNR]
+        if p.get("NODE_RAW_DIM") is not None:
+            node_raw_dim = p.get("NODE_RAW_DIM")
+        else:
+            node_raw_dim = 2 if use_queue else 1
+
         model = GATScheduler(
             raw_node_dim=node_raw_dim,
             mlp_hidden_dims=p.get("MLP_HIDDEN_DIMS", [32,32]),
@@ -143,7 +155,9 @@ class ExperimentRunner:
             gat_out_dim=p.get("GAT_OUT_DIM", 48),
             num_heads=p.get("NUM_HEADS", 4),
             T_iterations=p.get("NUM_GAT_LAYERS", 4),
-            schedule_hidden_dim=p.get("SCHEDULE_HIDDEN", 32)
+            schedule_hidden_dim=p.get("SCHEDULE_HIDDEN", 32),
+            use_power_control=use_power_control,
+            power_hidden_dim=power_hidden_dim
         )
 
         optimizer = torch.optim.Adam(model.parameters(), lr=p.get("LR", 1e-4))
@@ -163,24 +177,26 @@ class ExperimentRunner:
         trainer = Trainer(
             model, optimizer, device=device_param, gpu_id=self.gpu_id, log_dir=self.log_dir,
             grad_clip_config=p.get("GRAD_CLIP_CONFIG", None),
+            use_power_control=use_power_control,
+            use_queue=use_queue,
         )
-        # read lambda parameters (no backward compatibility with old keys)
-        lambda_sparsity = p.get("LAMBDA_SPARSITY", 0.01)
-        lambda_conflict = p.get("LAMBDA_CONFLICT", 0.1)
 
         trained = trainer.train(
             num_epochs=p.get("EPOCHS", 20),
             train_dataset=train_set,
             val_dataset=val_set,
-            lambda_sparsity=lambda_sparsity,
             eval_interval=p.get("EVAL_INTERVAL", 1),
-            lambda_conflict=lambda_conflict,
-            conflict_warmup_epochs=p.get("CONFLICT_WARMUP", 5),
-            lr_scheduler=lr_scheduler
+            lr_scheduler=lr_scheduler,
+            use_power_control=use_power_control,
+            use_queue=use_queue,
         )
 
         # use trainer's evaluate
-        test_util = trainer.evaluate(model, test_set)
+        test_result = trainer.evaluate(model, test_set, use_power_control=use_power_control, use_queue=use_queue)
+        if use_power_control:
+            test_util, test_alpha = test_result
+        else:
+            test_util = test_result
 
         # save results - use EXCEL_SHEET from config first, then fallback to experiment group
         excel_sheet = p.get("EXCEL_SHEET", None)

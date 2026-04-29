@@ -99,16 +99,24 @@ class NetworkGenerator:
             positions[i] = new_pos
         return positions
 
-    def _generate_queue_states(self):
-        # flow follows poisson distribution
-        queue_states = torch.poisson(torch.ones(self.num_uavs) * self.flow_lambda)
+    def _generate_queue_states(self, mode="random"):
+        if mode == "random":
+            # 随机生成队列长度，模拟不同拥塞状态
+            queue_states = torch.randint(low=0, high=20, size=(self.num_uavs,)).float()
+        elif mode == "poisson":
+            # 泊松分布生成队列长度
+            queue_states = torch.poisson(torch.ones(self.num_uavs) * self.flow_lambda)
+        else:
+            raise ValueError(f"Unknown queue mode: {mode}")
         return queue_states.float()
 
     def _channel_gain(self, positions):
         dist = torch.cdist(positions, positions, p=2)
         large_scale = self.lambda0**(1/2) * dist**(-self.xi / 2)
-        small_scale = torch.sqrt(torch.randn_like(dist) ** 2 + torch.randn_like(dist) ** 2)
-        h = large_scale * small_scale
+        # 正确生成复信道 h_ss ~ CN(0,1)：实部虚部独立 N(0, 0.5)，使得 |h_ss|² ~ Exp(1)
+        real_part = torch.randn_like(dist) / np.sqrt(2)
+        imag_part = torch.randn_like(dist) / np.sqrt(2)
+        h = large_scale * (real_part + 1j * imag_part)
         h.fill_diagonal_(0)  # hii=0 so snr=0 no link avoid self transmission
         rx_power = self.tx_power * torch.abs(h) ** 2
         snr = rx_power / self.noise_power
@@ -140,9 +148,14 @@ class NetworkGenerator:
 
     # 生成网络主函数，一定有很多问题，注意打断点查看
     # csi_mode: "perfect" | "large_scale" | "quantized"
-    def generate_network(self, csi_mode="perfect", q_bits=8):
+    # queue_mode: "random" | "poisson"
+    def generate_network(self, csi_mode="perfect", q_bits=8, queue_mode="random", queue_states=None):
         positions = self._init_positions()
-        queue_states = self._generate_queue_states()
+        if queue_states is not None:
+            # 使用外部传入的队列状态（如仿真过程中的动态队列）
+            self.queue_states = queue_states
+        else:
+            self.queue_states = self._generate_queue_states(mode=queue_mode)
         dist, h, snr, large_scale = self._channel_gain(positions)
         snr_thres_beta = 10 ** (self.snr_thres / 10)
 
@@ -192,16 +205,22 @@ class NetworkGenerator:
         # calculate vertex feature and edge weight
         for u_idx in range(num_links):
             u_tx, u_rx = src[u_idx].item(), dst[u_idx].item()
-            # vertex feature
+            # vertex feature: [SNR(dB), dist_normalized, queue_length_normalized]
             if csi_mode == "quantized":
                 snr_val = snr_est_matrix[u_tx, u_rx].item()
-                vertex_features.append([10 * np.log10(snr_val + 1e-12)])
+                snr_db = 10 * np.log10(snr_val + 1e-12)
             elif csi_mode == "large_scale":
                 snr_val = snr_large_scale[u_tx, u_rx].item()
-                vertex_features.append([10 * np.log10(snr_val + 1e-12)])
+                snr_db = 10 * np.log10(snr_val + 1e-12)
             else:
                 snr_val = snr[u_tx, u_rx].item()
-                vertex_features.append([10 * np.log10(snr_val + 1e-12)])
+                snr_db = 10 * np.log10(snr_val + 1e-12)
+            
+            # 队列长度特征：取对数并归一化（避免数值差异过大）
+            queue_len = self.queue_states[u_tx].item()
+            queue_normalized = np.log1p(queue_len) / 10.0  # log(1+x)/10，队列10以下基本归一化到1
+            
+            vertex_features.append([snr_db, queue_normalized])
 
             # edge weight (interference)
             for v_idx in range(num_links):
@@ -280,6 +299,7 @@ class NetworkGenerator:
             tx_power=self.tx_power,
             carrier_f=self.carrier_f,
             csi_mode=csi_mode,
+            queue_states=self.queue_states,
         )
 
     def visualize_network(self, state, save_path=None):
@@ -552,11 +572,13 @@ class NetworkState:
     __slots__ = ['links', 'vertex_features', 'edge_index', 'edge_weights', 'large_scale',
                  'signal_power', 'signal_power_large_scale', 'signal_power_quant',
                  'noise_power', 'bandwidth', 'snr_gap', 'neighbor_map',
-                 'positions', 'num_vertices', 'tx_power', 'carrier_f', 'csi_mode']
+                 'positions', 'num_vertices', 'tx_power', 'carrier_f', 'csi_mode',
+                 'queue_states']
     def __init__(self, links, vertex_features, edge_index, edge_weights,
                  large_scale, signal_power, signal_power_large_scale, signal_power_quant,
                  noise_power, bandwidth, snr_gap, 
-                 neighbor_map, positions, tx_power=None, carrier_f=None, csi_mode="perfect"):
+                 neighbor_map, positions, tx_power=None, carrier_f=None, csi_mode="perfect",
+                 queue_states=None):
         self.links = links
         self.vertex_features = vertex_features
         self.edge_index = edge_index
@@ -571,9 +593,10 @@ class NetworkState:
         self.neighbor_map = neighbor_map
         self.positions = positions
         self.num_vertices = links.size(0)
-        # 通信参数（用于基线对齐）
-        self.tx_power = tx_power  # 发射功率（线性单位，W）
-        self.carrier_f = carrier_f  # 载波频率（Hz）
+        self.tx_power = tx_power
+        self.carrier_f = carrier_f
+        self.csi_mode = csi_mode
+        self.queue_states = queue_states
 
 if __name__ == '__main__':
     # 参数设置

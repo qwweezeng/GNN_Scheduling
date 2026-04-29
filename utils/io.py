@@ -12,7 +12,7 @@ def save_experiment_results(trained_model, train_set, test_util, params,
     Concise saver: write per-epoch JSON, append Excel summary (all_experiments_summary.xlsx), save model state.
     No longer saves CSV files - now uses Excel as the default format.
     Raises RuntimeError on any I/O failure with aggregated messages.
-    params: dict containing keys used below (NUM_UAV, CSI_MODE, Q_BITS, LR, LAMBDA_SPARSITY, LAMBDA_CONFLICT, BATCH_SIZE, EPOCHS, NOTES, seed)
+    params: dict containing keys used below (NUM_UAV, CSI_MODE, Q_BITS, LR, BATCH_SIZE, EPOCHS, NOTES, seed)
     excel_sheet: Excel sheet name for saving results (default: "Sheet1")
     """
     os.makedirs(results_dir, exist_ok=True)
@@ -57,9 +57,10 @@ def save_experiment_results(trained_model, train_set, test_util, params,
     header = [
         "experiment_id", "group", "notes", "feature",
         "num_uav", "train_size", "seed",
-        "lr", "lambda_sparsity", "lambda_conflict", "batch_size", "epochs",
+        "lr",
+        "use_power_control", "lambda_power_penalty", "lambda_alpha_smooth",
+        "batch_size", "epochs",
         "final_train_loss", "best_val_utility", "test_utility",
-        "final_sparsity_penalty", "final_conflict_penalty",
         "convergence_epoch"
     ]
 
@@ -89,26 +90,16 @@ def save_experiment_results(trained_model, train_set, test_util, params,
         "train_size": len(train_set),
         "seed": params.get("SEED", ""),
         "lr": params.get("LR"),
-        "lambda_sparsity": params.get("LAMBDA_SPARSITY", None),
-        "lambda_conflict": params.get("LAMBDA_CONFLICT", None),
+        "use_power_control": params.get("USE_POWER_CONTROL", False),
+        "lambda_power_penalty": params.get("LAMBDA_POWER_PENALTY", None),
+        "lambda_alpha_smooth": params.get("LAMBDA_ALPHA_SMOOTH", None),
         "batch_size": params.get("BATCH_SIZE"),
         "epochs": params.get("EPOCHS"),
         "final_train_loss": final_train_loss,
         "best_val_utility": best_val_util,
         "test_utility": test_util,
-        "final_sparsity_penalty": None,
-        "final_conflict_penalty": None,
         "convergence_epoch": convergence_epoch
     }
-
-    # determine final per-epoch penalties (last epoch values) if available
-    try:
-        if per_epoch_logs:
-            last = per_epoch_logs[-1]
-            row["final_sparsity_penalty"] = last.get("sparsity_penalty", None)
-            row["final_conflict_penalty"] = last.get("conflict_penalty", None)
-    except Exception:
-        pass
 
     # save model to results/models/
     save_model_flag = params.get("SAVE_MODEL", True)
