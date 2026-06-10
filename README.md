@@ -28,312 +28,178 @@ uv pip install -r pyproject.toml
 pip install torch numpy matplotlib networkx tensorboard pyyaml pandas openpyxl
 ```
 
+---
+
+## 参数联动速查表（重要！）
+
+本项目有多个**可选功能模块**，每个模块涉及一组必须联动设置的参数。若参数不一致，代码会在运行时报错（防呆设计）。
+
+### 1. 队列感知模块（Queue-aware）
+
+| 功能 | 参数 | 值 | 说明 |
+|------|------|----|------|
+| 启用开关 | `run_queue_experiment.py` | 固定 | 队列感知实验脚本，无开关 |
+| 特征维度 | `raw_node_dim` | `2` | GAT 输入 `[SNR, Q]` |
+| Loss | — | `-Σ(Q_i × R_i)` | MWS 加权效用 |
+
+**运行命令：**
+
+```bash
+# 队列感知实验（默认参数）
+uv run python experiments/run_queue_experiment.py --num_uav 30 --seed 42
+
+# 自定义数据集规模和训练轮数
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --train_size 500 --val_size 64 --test_size 64 --epochs 30 --seed 42
+```
+
+**数据集目录：**
+- 非队列数据：`datasets/dataset_numUAV=<N>.pkl`（与 `bin/run_experiment.py` 共用）
+- 队列数据：`datasets/queue/dataset_numUAV=<N>.pkl`（队列实验专用）
+
+**标准模型库：**
+- 非队列模型：`results/models/gat_numUAV=<N>.pth`（Loss = -Σ R_i）
+- 队列模型：`results/models/gat_queue_numUAV=<N>.pth`（Loss = -Σ Q_i×R_i）
+- 命名直接以 `num_uav` 定位，方便任何时候直接调取
+
+### 2. 功率控制模块（Power Control）
+
+| 功能 | 参数 | 值 | 说明 |
+|------|------|----|------|
+| 启用开关 | `USE_POWER_CONTROL` | `true` | 在实验脚本中设置 |
+| 惩罚系数 | `LAMBDA_POWER_PENALTY` | `0.01` | 鼓励降低功率 |
+
+**运行命令：**
+
+```bash
+# 功率控制实验
+uv run python experiments/power_control_experiment.py --mode compare --num-uav 50
+```
+
+### 3. CSI 量化模块
+
+| 功能 | 参数 | 值 | 说明 |
+|------|------|----|------|
+| CSI 模式 | `CSI_MODE` | `"quantized"` | 可选 `perfect`/`large_scale`/`quantized` |
+| 量化精度 | `Q_BITS` | `4` | 比特数越小精度越低 |
+
+**运行命令：**
+
+```bash
+uv run python bin/run_experiment.py --csi-mode quantized --q-bits 4 --seed 42
+```
+
+---
+
 ## 实验一览
 
+> **⚠️ 重要提示：每个实验都有对应的专用脚本，请勿混用。**
+> - 基础吞吐量实验 → `bin/run_experiment.py`
+> - 队列感知实验 → `experiments/run_queue_experiment.py`
+> - 功率控制实验 → `experiments/power_control_experiment.py`
+> - 跨尺度扩展性 → `experiments/scaling_experiment.py`
 
-| 实验           | 命令                                 | 主要用途                           |
-| ---------------- | -------------------------------------- | ------------------------------------ |
-| 单次训练与评估 | `bin/run_experiment.py`              | 训练 GAT 模型，输出 test utility   |
-| 收敛性分析     | `experiments.convergence_analysis`   | 研究不同训练样本量对性能的影响     |
-| 跨尺度扩展性   | `experiments.scaling_experiment`     | 研究模型在不同 numUAV 间的泛化能力 |
-| CSI 不完美性   | `experiments.csi_imperfection_study` | 研究信道量化精度对调度性能的影响   |
-| 超参数网格搜索 | `experiments.grid_search_lambda`     | 搜索稀疏性/冲突惩罚的最优权重      |
-| 画图           | `utils.plot_paper`                   | 生成所有论文图表                   |
-| TensorBoard    | `tensorboard --logdir=./logs/`       | 可视化训练曲线                     |
+| 实验 | 命令 | 主要用途 |
+|------|------|----------|
+| 基础吞吐量 | `bin/run_experiment.py` | 训练 GAT，输出 test utility |
+| 队列感知仿真 | `run_queue_experiment.py` | 队列稳定性分析 |
+| 功率控制对比 | `power_control_experiment.py` | 调度-功率联合优化 |
+| 跨尺度扩展性 | `scaling_experiment.py --mode all` | 模型泛化能力 |
+| CSI 不完美性 | `csi_imperfection_study.py` | 信道量化精度影响 |
+| 收敛性分析 | `convergence_analysis.py` | 训练样本量分析 |
+| 画图 | `utils.plot_paper` | 生成论文图表 |
+| TensorBoard | `tensorboard --logdir=./logs/` | 可视化训练曲线 |
 
-
-## 队列感知仿真（Queue-aware Simulation）
-
-### 目的
-
-研究在**多时隙队列动态**下的调度性能。评估指标包括：
-- 队列长度轨迹（是否发散）
-- 吞吐量稳定性
-- 长期平均效用
-
-### 仿真模型
-
-**信道模型（块衰落）：**
-- 默认：整个仿真周期信道保持不变
-- 可配置：每 N 个时隙更新一次信道（用于长记忆仿真）
-
-**队列更新公式：**
-$$D_i(t) = \pi_i(t) \times R_i(t) \times B \times \tau / L$$
-
-$$Q_i(t+1) = \max(0, Q_i(t) - D_i(t)) + A_i(t)$$
-
-其中：
-- $R_i(t)$：可达速率（bps/Hz）
-- $B$：带宽（Hz）
-- $\tau$：时隙长度（秒）
-- $L$：包大小（bits）
-- $A_i(t) \sim \text{Poisson}(\lambda)$：新到达的包数
-
-**单位说明：**
-- `arrival_lambda`：泊松到达均值（**packets/slot**）
-- `slot_duration`：时隙长度（秒）
-- `packet_size`：包大小（bits）
-- 队列状态和发送量单位都是 **packets**
-
-### 常用参数
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--arrival_lambda` | 泊松到达率（packets/slot） | `0.5` |
-| `--slot_duration` | 时隙长度（秒） | `0.001` (1ms) |
-| `--packet_size` | 包大小（bits） | `12000` |
-| `--num_slots` | 仿真时隙数 | `5000` |
-| `--arrival_rates` | 要测试的到达率列表 | `0.1,0.3,0.5...` |
-
-### 配置文件选项
-
-```yaml
-# 队列感知仿真参数
-USE_QUEUE: true                 # 启用队列感知
-ARRIVAL_LAMBDA: 0.5            # 到达率（packets/slot）
-SLOT_DURATION: 0.001           # 时隙长度（秒）
-PACKET_SIZE: 12000             # 包大小（bits）
-```
-
-### 示例
+### 1. 基础吞吐量实验（推荐入口）
 
 ```bash
-# 队列感知实验
-uv run python -m experiments.run_queue_experiment \
-    --num_uav 30 --train_size 300 --arrival_lambda 0.5 \
-    --num_slots 5000 --seed 42 --gpu-id 0
-
-# 测试不同到达率
-uv run python -m experiments.run_queue_experiment \
-    --arrival_rates 0.1,0.3,0.5,0.7,1.0 --num_slots 3000
-```
-
----
-
-## 功率控制实验（power_control_experiment）
-
-### 目的
-
-在密集无人机网络中引入功率控制，实现**调度-功率联合优化**。通过 GAT 的双头输出架构同时学习链路激活概率 $\pi_i$ 和功率缩放系数 $\alpha_i \in (0,1]$，最终发射功率为 $P_i = \pi_i \cdot \alpha_i \cdot P_{\max}$。
-
-### 核心设计
-
-| 组件 | 说明 |
-|------|------|
-| **$\pi$ head (调度)** | Sigmoid → {0,1}，决定链路是否激活 |
-| **$\alpha$ head (功率)** | Sigmoid → (0,1]，控制功率缩放系数 |
-| **功率惩罚项** | $\lambda_{\alpha} \cdot (1 - \text{mean}(\alpha))$，鼓励降低功率 |
-| **$\alpha$ 平滑惩罚** | 相邻链路功率差异惩罚，促进均匀功率分配 |
-
-### 常用参数
-
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--mode` | 实验模式：`compare`（对比）/ `power-control-only`（仅功率控制）/ `grid-search`（网格搜索） | `compare` |
-| `--power-penalty` | $\lambda_{\text{power\_penalty}}$ 功率惩罚系数 | `0.01` |
-| `--power-penalty-search` | 网格搜索的 $\lambda$ 值列表 | `0.001 0.01 0.05 0.1` |
-
-### 输出指标
-
-- **test_util**：测试集总吞吐量
-- **alpha_mean**：平均功率缩放系数（越小表示降功率越多）
-- **pi_mean**：平均链路激活率
-
-### 示例
-
-```bash
-# 对比实验（有 vs 无功率控制）
-uv run python experiments/power_control_experiment.py --num-uav 50 --train-size 300 --gpu-id 0
-
-# 仅运行功率控制模式
-uv run python experiments/power_control_experiment.py --num-uav 50 --train-size 300 \
-    --mode power-control-only --power-penalty 0.05
-
-# 网格搜索最优 λ
-uv run python experiments/power_control_experiment.py --num-uav 30 --train-size 100 \
-    --mode grid-search --power-penalty-search 0.001 0.01 0.05 0.1 0.5
-```
-
-### 配置文件选项
-
-在 `configs/exp_example.yaml` 中设置：
-
-```yaml
-# 启用功率控制
-USE_POWER_CONTROL: true
-
-# 功率惩罚系数（越小越鼓励降功率）
-LAMBDA_POWER_PENALTY: 0.01
-
-# α 平滑惩罚系数（鼓励相邻链路功率接近）
-LAMBDA_ALPHA_SMOOTH: 0.0
-
-# 功率头隐藏层维度
-POWER_HIDDEN_DIM: 16
-```
-
-
----
-
-## 1. 单次训练与评估
-
-### 目的
-
-训练一个 GAT 调度模型，在指定 numUAV 网络拓扑上学习最大化全网效用，输出 test utility 并与基线算法比较。
-
-### 常用参数
-
-
-| 参数                | 说明                                              | 示例                       |
-| --------------------- | --------------------------------------------------- | ---------------------------- |
-| `--config`          | YAML 配置文件路径                                 | `configs/exp_example.yaml` |
-| `--seed`            | 随机种子（用于复现）                              | `42`, `10086`              |
-| `--dry-run`         | 小样本快速验证（不保存结果）                      | flag                       |
-| `--gpu-id`          | 指定 GPU 编号                                     | `0`, `1`                   |
-| `--csi-mode`        | 信道模式：`perfect` / `large_scale` / `quantized` | `perfect`                  |
-| `--q-bits`          | 量化比特数（仅 quantized 模式生效）               | `4`, `8`                   |
-| `--train-size`      | 训练样本数                                        | `500`, `1024`              |
-| `--lambda-sparsity` | 稀疏性惩罚权重                                    | `0.1`                      |
-| `--group`           | 实验组名称（决定 Excel sheet）                    | `csi_imperfection`         |
-| `--notes`           | 实验备注                                          | `"baseline run"`           |
-
-### 输出文件
-
-- `results/models/`: 训练好的模型权重 `.pth`
-- `results/metrics/`: 每次运行的指标 CSV
-- `results/reports/`: 文本分析报告
-- `logs/`: TensorBoard 日志、模型 checkpoint
-- `results/all_experiments_summary.xlsx`: 所有实验的汇总 Excel
-
-### 示例
-
-```bash
-# 快速验证配置（不保存，10 条样本）
+# 快速验证（不保存，10 条样本）
 uv run python bin/run_experiment.py --config configs/exp_example.yaml --seed 42 --dry-run
 
 # 正式训练
 uv run python bin/run_experiment.py --config configs/exp_example.yaml --seed 42
 
-# 训练 numUAV=50，量化 CSI，4 bit
+# 量化 CSI 实验
 uv run python bin/run_experiment.py --config configs/exp_example.yaml \
-    --num-uav 50 --csi-mode quantized --q-bits 4 --seed 42
-
-# 指定实验组（结果写入 Excel Sheet3）
-uv run python bin/run_experiment.py --config configs/exp_example.yaml \
-    --group csi_imperfection --notes "quantized 4bit run" --seed 42
+    --csi-mode quantized --q-bits 4 --seed 42
 ```
 
----
+**输出：** `results/models/` 训练模型，`results/all_experiments_summary.xlsx` 汇总数据。
 
-## 2. CSI 不完美性实验（`csi_imperfection_study`）
-
-### 目的
-
-研究信道状态信息（CSI）精度对调度性能的影响。分别测量：
-
-
-| CSI 模式      | 说明                                     | 在图中的表现              |
-| --------------- | ------------------------------------------ | --------------------------- |
-| `perfect`     | 完美 CSI，含小尺度衰落                   | 最顶层虚线（upper bound） |
-| `large_scale` | 仅大尺度衰落（路径损耗），无小尺度随机性 | 中层虚线                  |
-| `quantized`   | 量化距离近似（大尺度 + 量化精度 loss）   | 实线，随 q_bits 变化      |
-
-填充逻辑：对 numUAV = {20, 30, 40, 50} 的每条曲线，阴影填充范围为 `[test utility, min(next numUAV utility, upper bound)]`。
-
-### 常用参数
-
-
-| 参数               | 说明                   | 默认值                     |
-| -------------------- | ------------------------ | ---------------------------- |
-| `--num-uav`        | 基础无人机数量         | `20`                       |
-| `--quantized-bits` | 要测试的量化比特数列表 | `2 4 6 8 10`               |
-| `--config`         | 配置文件路径           | `configs/exp_example.yaml` |
-| `--gpu-id`         | GPU 编号               | `0`                        |
-
-### 输出文件
-
-- `results/all_experiments_summary.xlsx`（Sheet3）：数值结果汇总
-- `results/img/csi_imperfection.png / .eps`：论文图表
-
-### 示例
+### 2. 队列感知实验
 
 ```bash
-# 默认跑 numUAV=20 的所有模式（perfect / large_scale / 各量化档位）
-uv run python experiments/csi_imperfection_study.py --gpu-id 0
+# 队列感知实验（训练 + 多时隙仿真）
+uv run python experiments/run_queue_experiment.py --num_uav 30 --seed 42
 
-# 跑 numUAV=50，测试 2/4/6/8 bit 量化
-uv run python experiments/csi_imperfection_study.py --num-uav 50 --quantized-bits 2 4 6 8
+# 自定义数据集规模
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --train_size 500 --val_size 64 --test_size 64 --seed 42
 
-# 仅生成图表（数据已有时）
-uv run python -m utils.plot_paper --plot csi
+# 测试不同到达率
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --arrival_rates 0.5,1.0,2.0,3.0 --num_slots 5000 --seed 42
 ```
 
-> **注意：** 脚本目前已实现 `perfect` 和 `large_scale` 的自动化跑实验；若要跑 `quantized` 模式，需在脚本中取消注释对应的 `for qb in args.quantized_bits` 循环。
+> **注意**：`run_queue_experiment.py` 固定使用队列感知模式（MWS 加权 loss），
+> 数据集存储在 `datasets/queue/` 目录，与基础实验的 `datasets/` 分离。
 
----
+**实验对比的调度算法：**
 
-## 3. 跨尺度扩展性实验（`scaling_experiment`）
+| 算法 | 特征输入 | 调度依据 | 说明 |
+|------|----------|----------|------|
+| `GAT` | `[SNR, Q]` (dim=2) | `Q_i × R_i` | 队列感知 GAT（核心方法） |
+| `GAT-base` | `[SNR]` (dim=1) | 纯 `R_i` | 非队列 GAT baseline |
+| `Random` | — | 均匀概率 | 随机调度 |
+| `Greedy` | `[SNR]` | SNR 排序 | 贪心选 SNR 最高链路 |
 
-### 目的
+> 通过 GAT vs GAT-base 对比可验证"队列感知特征"是否有额外价值。
 
-研究在 numUAV=X 上训练的模型能否泛化到 numUAV=Y；以及混合多尺度数据训练是否能提升跨尺度泛化能力。
+**核心公式：**
 
-### 常用参数
+```
+D_i(t) = π_i(t) × R_i(t) × B × τ / L   (发送量，packets/slot)
+Q_i(t+1) = max(0, Q_i(t) - D_i(t)) + A_i(t)   (Lindley 方程)
+```
 
-
-| 参数                    | 说明                                                       | 默认值           |
-| ------------------------- | ------------------------------------------------------------ | ------------------ |
-| `--mode`                | 实验模式：`paired`（配对）/ `mixed`（混合）/ `all`（全部） | 必选             |
-| `--use-existing-models` | 复用已有模型（不重新训练）                                 | flag             |
-| `--model-library`       | 模型库目录                                                 | `results/models` |
-| `--quick`               | 减少训练 epoch / 样本量（快速调试）                        | flag             |
-| `--gpu-id`              | GPU 编号                                                   | `0`              |
-
-### 输出文件
-
-- `results/img/scaling_paired.png`：配对实验图（train on X → test on Y）
-- `results/img/scaling_mixed.png`：混合训练实验图
-
-### 示例
+### 3. 功率控制实验
 
 ```bash
-# 配对泛化实验（已训练模型直接测）
+# 对比实验（有 vs 无功率控制）
+uv run python experiments/power_control_experiment.py --num-uav 50 --train-size 300
+
+# 仅运行功率控制模式
+uv run python experiments/power_control_experiment.py --mode power-control-only --power-penalty 0.05
+
+# 网格搜索最优 λ
+uv run python experiments/power_control_experiment.py --mode grid-search \
+    --power-penalty-search 0.001 0.01 0.05 0.1 0.5
+```
+
+### 4. 跨尺度扩展性实验
+
+```bash
+# 配对泛化（训练 X → 测试 Y）
 uv run python -m experiments.scaling_experiment --mode paired --use-existing-models
 
-# 混合训练实验
+# 混合训练
 uv run python -m experiments.scaling_experiment --mode mixed
 
 # 全部实验 + 快速模式
 uv run python -m experiments.scaling_experiment --mode all --quick
-
-# 指定模型库路径
-uv run python -m experiments.scaling_experiment --mode paired \
-    --model-library ./results/models --use-existing-models
 ```
 
----
+### 5. CSI 不完美性实验
 
-## 4. 收敛性分析（`convergence_analysis`）
+```bash
+# 默认跑所有模式
+uv run python experiments/csi_imperfection_study.py --gpu-id 0
 
-### 目的
+# 跑 numUAV=50，测试 2/4/6/8 bit 量化
+uv run python experiments/csi_imperfection_study.py --num-uav 50 --quantized-bits 2 4 6 8
+```
 
-研究不同训练样本量（train_size）对模型性能的影响，确定达到稳定性能所需的最少样本数。
-
-### 常用参数
-
-
-| 参数       | 说明     | 默认值 |
-| ------------ | ---------- | -------- |
-| `--gpu-id` | GPU 编号 | `0`    |
-
-> 样本量列表在脚本内硬编码（`train_sizes = [20, 80]`），如需修改请直接编辑 `experiments/convergence_analysis.py` 第 138 行。
-
-### 输出文件
-
-- `results/all_experiments_summary.xlsx`（Sheet2）：不同 train_size 下的 test utility
-- `results/img/convergence.png`：收敛曲线图
-
-### 示例
+### 6. 收敛性分析
 
 ```bash
 uv run python -m experiments.convergence_analysis --gpu-id 0
@@ -341,58 +207,49 @@ uv run python -m experiments.convergence_analysis --gpu-id 0
 
 ---
 
-## 5. 可视化（`utils.plot_paper`）
+## 队列感知仿真详解
 
-### 目的
+### 物理场景
 
-根据已有实验结果数据，生成论文所需的高质量图表（EPS + PNG）。
+每个时隙的流程：
 
-### 常用参数
-
-
-| 参数            | 说明                                                                 | 默认值         |
-| ----------------- | ---------------------------------------------------------------------- | ---------------- |
-| `--plot`        | 图表类型：`all` / `baseline` / `training` / `samples` / `csi`        | `all`          |
-| `--results-dir` | 结果目录                                                             | `results`      |
-| `--output-dir`  | 图片输出目录（覆盖 results-dir 默认值）                              | `results/img/` |
-| `--format`      | 输出格式：`eps` / `png` / `both`                                     | `both`         |
-| `--colors`      | 配色方案：`v1` / `v2` / `v3`（覆盖 `utils/plot_config.py` 全局配色） | 默认           |
-| `--show`        | 显示图形窗口（需图形界面）                                           | 不显示         |
-
-配色方案预览（`--colors v1/v2/v3` 均定义在 `utils/plot_paper.py` 第 771-791 行）：
-
-- **v1**：深蓝 / 浅蓝 / 浅红 / 深红
-- **v2**：蓝 / 紫 / 粉 / 红
-- **v3**：淡蓝 / 深蓝 / 暗红 / 橙红
-
-### 各图表说明
-
-
-| `--plot`   | 内容                                        | 输出文件                          |
-| ------------ | --------------------------------------------- | ----------------------------------- |
-| `baseline` | GAT vs 各基线算法的吞吐量柱状图             | `baseline_comparison.png/.eps`    |
-| `training` | train_loss 与 val_utility 随 epoch 变化曲线 | `training_*.png/.eps`             |
-| `samples`  | test utility 随训练样本量变化曲线           | `performance_vs_samples.png/.eps` |
-| `csi`      | CSI 不完美性：量化精度 vs test utility      | `csi_imperfection.png/.eps`       |
-
-### 示例
-
-```bash
-# 生成所有图表（EPS + PNG）
-uv run python -m utils.plot_paper --plot all
-
-# 仅画 CSI 不完美性图（PNG 格式）
-uv run python -m utils.plot_paper --plot csi --format png
-
-# 单独画基线对比图
-uv run python -m utils.plot_paper --plot baseline
-
-# 使用 v2 配色方案
-uv run python -m utils.plot_paper --plot all --colors v2
-
-# 指定输出目录
-uv run python -m utils.plot_paper --plot csi --output-dir ./figures/
 ```
+┌──────────────────────────────────────────────────────┐
+│  时隙 t                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
+│  │ 业务到达  │  │  MAC调度  │  │  物理传输  │           │
+│  │ A_i~Poi(λ)│→ │ π_i(t)=0/1│→ │ R_i(SNR)  │           │
+│  │(包/时隙) │  │ (链路激活) │  │ (bps/Hz)  │           │
+│  └──────────┘  └──────────┘  └──────────┘           │
+│       ↓              ↓              ↓                 │
+│  队列更新:        发送决策:       发送包数:          │
+│  Q_i += A_i       π_i ∈ {0,1}    D_i = π_i ×      │
+│                                    R_i×B×τ/L          │
+└──────────────────────────────────────────────────────┘
+```
+
+### 关键参数说明
+
+| 参数 | 说明 | 单位 |
+|------|------|------|
+| `arrival_lambda` | 泊松到达均值 | packets/slot |
+| `slot_duration` | 时隙长度 τ | 秒 |
+| `packet_size` | 包大小 | bits |
+| `num_slots` | 仿真时隙数 | slots |
+
+### 性能指标
+
+| 指标 | 说明 | 单位 |
+|------|------|-------|
+| `avg_queue` | 最终平均队列长度 | packets |
+| `long_term_avg_queue` | 长期平均队列长度 | packets |
+| `throughput` | 吞吐量比（departures/arrivals） | 无量纲，≈1 表示稳定 |
+| `throughput_mbps` | 实际网络总吞吐量 | Mbps |
+| `departure_rate_pps` | 每链路平均发送速率 | packets/slot |
+| `queue_overflow_prob` | 溢出概率（Q > 50 的比例） | — |
+| `is_stable` | 稳定性判断 | True/False |
+
+> **关键对比**：GAT vs GAT-base 决定了队列感知特征 `[SNR, Q]` 是否有额外价值。
 
 ---
 
@@ -401,10 +258,10 @@ uv run python -m utils.plot_paper --plot csi --output-dir ./figures/
 ```
 GNN_Scheduling/
 ├── bin/
-│   └── run_experiment.py        # CLI 统一入口（推荐方式）
+│   └── run_experiment.py        # CLI 统一入口（基础吞吐量实验）
 │
 ├── configs/
-│   └── exp_example.yaml         # 所有超参数集中管理
+│   └── exp_example.yaml         # 基础配置（所有复杂功能默认关闭）
 │
 ├── models/
 │   └── model.py                 # GATScheduler、calculate_achievable_rate
@@ -415,33 +272,257 @@ GNN_Scheduling/
 │   ├── csi_imperfection_study.py # CSI 不完美性实验
 │   ├── scaling_experiment.py    # 跨尺度扩展性实验
 │   ├── convergence_analysis.py  # 收敛性分析
-│   └── power_control_experiment.py # 功率控制实验
+│   ├── power_control_experiment.py # 功率控制实验
+│   └── compare_gat_vs_spatial_dl.py # GAT vs Spatial DL 对比
 │
-├── simulator/                   # 仿真器模块
-│   ├── __init__.py             # 模块说明文档
-│   ├── base.py                 # BaseSimulator、SimpleSimulator
-│   └── queue_simulator.py      # QueueSimulator：队列感知仿真器
+├── simulator/
+│   ├── __init__.py            # 模块说明文档
+│   ├── base.py                # BaseSimulator、SimpleSimulator
+│   └── queue_simulator.py     # QueueSimulator：队列感知仿真器
 │
 ├── train/
-│   └── trainer.py               # 训练循环、梯度裁剪、早停
+│   └── trainer.py              # 训练循环、梯度裁剪、早停
 │
 ├── utils/
-│   ├── baseline.py              # 基线算法（Random / Greedy / FPLinQ / Spatial DL）
-│   ├── network_generate.py      # 数据生成器
-│   ├── plot_paper.py            # 论文图表绘制
-│   ├── plot_config.py           # 配色方案、全局画图风格
-│   └── io.py                    # 文件 I/O、Excel 读写
+│   ├── baseline.py             # 基线算法（Random/Greedy/FPLinQ/Spatial DL）
+│   ├── network_generate.py     # 数据生成器、NetworkState
+│   ├── plot_paper.py          # 论文图表绘制
+│   ├── plot_config.py          # 配色方案
+│   └── io.py                  # 文件 I/O、Excel 读写
 │
-├── results/
-│   ├── models/                  # 训练好的 .pth 模型文件
-│   ├── metrics/                 # 指标 CSV
-│   ├── reports/                 # 文本报告
-│   ├── img/                     # PNG / EPS 图表
-│   └── all_experiments_summary.xlsx # 所有实验汇总
+├── results/                    # 实验结果（详见「结果文件详解」章节）
 │
 └── logs/
-    └── tensorboard/             # TensorBoard 训练日志
+    └── tensorboard/            # TensorBoard 训练日志
 ```
+
+---
+
+## 结果文件详解
+
+### 目录结构
+
+```
+results/
+├── models/                                   # 标准模型库（共用）
+│   ├── gat_numUAV=<N>.pth                   # 非队列模型（raw_node_dim=1）
+│   ├── gat_queue_numUAV=<N>.pth             # 队列感知模型（raw_node_dim=2）
+│   ├── scaling_numUAV<N>.pth                # 跨尺度实验模型（配对泛化）
+│   └── mixed_numUAV20_30_40_50.pth          # 混合尺度训练模型
+│
+├── exp_<numUAV>_<timestamp>/                # 基础吞吐量实验输出（bin/run_experiment.py）
+│   ├── exp_<numUAV>_<timestamp>_per_epoch.json  # 每 epoch 训练日志
+│   ├── exp_<numUAV>_<timestamp>_model.pth       # 训练模型快照
+│   └── exp_<numUAV>_<timestamp>_baselines.json  # 基线算法对比结果
+│
+├── queue_exp<timestamp>_s<seed>/            # 队列感知实验输出（run_queue_experiment.py）
+│   ├── simulation_results.json              # 仿真结果 JSON
+│   ├── trajectory_lambda<λ>.png             # 队列长度/吞吐量轨迹图
+│   └── queue_comparison_bar.png             # 各算法平均队列长度柱状图
+│
+├── img/                                      # 论文图表（utils/plot_paper.py 生成）
+│   ├── baseline_comparison.{eps,png}        # 各算法吞吐量对比
+│   ├── training_curves_val_utility.{eps,png}# 验证集效用训练曲线
+│   ├── training_curves_train_loss.{eps,png} # 训练 Loss 曲线
+│   ├── performance_vs_samples.{eps,png}     # 性能随训练样本量变化
+│   └── csi_imperfection.{eps,png}           # CSI 量化精度影响
+│
+└── all_experiments_summary.xlsx             # 所有实验汇总表
+```
+
+### 模型文件说明
+
+| 文件名 | 训练脚本 | 节点特征 | Loss 函数 | 用途 |
+|--------|----------|----------|-----------|------|
+| `gat_numUAV=10.pth` | `bin/run_experiment.py` | `[SNR]` (dim=1) | `-Σ R_i`（纯吞吐量） | 基础 GAT 调度 |
+| `gat_queue_numUAV=10.pth` | `run_queue_experiment.py` | `[SNR, Q]` (dim=2) | `-Σ(Q_i × R_i)`（MWS 加权） | 队列感知调度 |
+| `scaling_numUAV20/30/40/50.pth` | `scaling_experiment.py` | `[SNR]` (dim=1) | `-Σ R_i` | 配对泛化实验 |
+| `mixed_numUAV20_30_40_50.pth` | `scaling_experiment.py` | `[SNR]` (dim=1) | `-Σ R_i` | 混合尺度训练 |
+
+> 注意：`scaling_*.pth` 命名不带 `=`，`gat_*_numUAV=*.pth` 带 `=`。
+
+> **注意**：`gat_numUAV=<N>.pth` 和 `gat_queue_numUAV=<N>.pth` 共用同一套数据集（`datasets/` 和 `datasets/queue/`），可通过 `run_queue_experiment.py` 中的 GAT vs GAT-base 对比来验证队列感知特征的价值。
+
+### 实验目录命名规则
+
+**基础实验** `exp_<numUAV>_<YYYYMMDD>_<HHMM>`：
+- `exp_20_20260130_2147`：numUAV=20，2026年1月30日 21:47 运行
+
+**队列实验** `queue_exp<YYYYMMDD>_<HHMM>_s<seed>`：
+- `queue_exp20260521_1100_s42`：队列实验，2026年5月21日 11:00，seed=42
+- `s<seed>` 后缀表示随机种子（默认 seed=42），用于实验复现
+- 6 个带 `s42` 的目录中，5 个含 `simulation_results.json`（成功），1 个为空（失败或中断）
+
+### Queue 实验结果解读（simulation_results.json）
+
+每个实验对比 4 种调度算法，字段含义如下：
+
+| 算法 | 说明 | 特征输入 | 调度依据 |
+|------|------|----------|----------|
+| `GAT` | 队列感知 GAT | `[SNR, Q]` | `Q_i × R_i` 加权 |
+| `GAT-base` | 非队列 GAT | `[SNR]` | 纯 `R_i` 最大化 |
+| `Random` | 随机调度 | — | 均匀概率激活 |
+| `Greedy` | 贪心调度 | `[SNR]` | 选 SNR 最高的链路 |
+
+结果按到达率 λ 分组，格式为 `<algo>_<λ>`（如 `GAT_0.5`）。关键指标：
+
+| 指标 | 说明 | 稳定判断 |
+|------|------|----------|
+| `avg_queue` | 仿真结束时平均队列长度 |越小越好 |
+| `throughput` | 吞吐量比（departures/arrivals） | ≈ 1 表示稳定 |
+| `is_stable` | 稳定性判断（throughput ≥ 0.95） | True/False |
+| `queue_overflow_prob` | 队列溢出概率（Q > 50） |越小越好 |
+
+### 图片说明
+
+| 图片文件 | 生成函数 | 数据来源 | 说明 |
+|----------|----------|----------|------|
+| `baseline_comparison` | `plot_baseline_comparison()` | `all_experiments_summary.xlsx` Sheet1 | GAT vs 基线算法吞吐量柱状图 |
+| `training_curves_val_utility` | `plot_training_curves(metric='val_utility')` | 各 `exp_*/_per_epoch.json` | 验证集效用随 epoch 变化 |
+| `training_curves_train_loss` | `plot_training_curves(metric='train_loss')` | 各 `exp_*/_per_epoch.json` | 训练 Loss 随 epoch 变化 |
+| `performance_vs_samples` | `plot_performance_vs_samples()` | `all_experiments_summary.xlsx` Sheet2 | 性能随训练样本量变化（收敛性分析） |
+| `csi_imperfection` | `plot_csi_imperfection()` | `all_experiments_summary.xlsx` Sheet3 | CSI 量化精度（2/4/6/8/10 bit）影响 |
+| `trajectory_lambda<λ>.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 队列长度/发送量/吞吐量随时隙变化轨迹 |
+| `queue_comparison_bar.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 各算法平均队列长度柱状对比 |
+
+> 生成图片命令：`uv run python utils/plot_paper.py --plot <type>`，`<type>` 可选 `all`、`baseline`、`training`、`samples`、`csi`。
+
+---
+
+## 研究日志（Changelog）
+
+> 本章节按时间顺序记录项目的每次重要迭代，包括成功的模块、失败的尝试、以及背后的理论分析。其他 chat 可以通过此日志快速了解项目全貌，避免重复踩坑。
+
+---
+
+### v0.3 — 队列感知模块（已放弃，但有记录价值）
+
+**时间：** 2026 年 5 月
+
+**目标：** 在 GAT 调度中加入队列长度信息，使调度器能够优先服务积压严重的链路，提升网络稳定性。
+
+**实现方式：**
+- 节点特征扩展：`[SNR]` → `[SNR, Q]`，即在输入特征中加入当前队列长度
+- Loss 函数修改：`L = -Σ R_i` → `L = -Σ(Q_i × R_i)`，即 MWS（Maximum Weight Scheduling）加权效用
+- 理论依据：Lyapunov 优化框架下的队列稳定性分析
+
+**实验结果：**
+
+| 指标 | GAT（队列感知） | GAT-base（非队列） |
+|------|---------------|-----------------|
+| 平均队列长度 | 更差 | 更好 |
+| 吞吐量比 | 更差 | 更好 |
+| 稳定性 | 更差 | 更好 |
+
+**失败原因（核心发现）：**
+
+经过深入分析，发现 MWS 加权 loss 在本场景下**理论上不成立**：
+
+1. **证明前提失效**：Lyapunov 稳定性证明中要求 `π² = π`（二元调度）以及服务率恒定。但我们的场景中：
+   - 调度值是连续概率 `π ∈ [0,1]`（而非二元 0/1）
+   - 服务率由 Shannon 公式 `R = log₂(1+SINR)` 决定，是随信道连续变化的
+   - 这使得 Lyapunov drift-plus-penalty 中的 `π² = π` 恒等式完全失效
+
+2. **均匀到达抹平差异化需求**：所有链路的到达率 λ 相同，调度器无法从队列状态中识别"哪条链路更需要服务"
+
+3. **训练-仿真分布不匹配**：训练时使用 `uniform(0, 500)` 的队列快照，仿真时使用 Poisson 累积队列
+
+**结论：** 将 Q 显式加入 loss 函数对于本场景无意义。队列信息需要通过其他方式（如时间记忆模型）隐式传递，而非直接作为优化目标。
+
+**相关脚本：** `experiments/run_queue_experiment.py`
+
+**遗留影响：** 代码中仍保留 `use_queue` 参数和 `raw_node_dim=2` 的支持，但默认关闭。如果未来需要与时间记忆模型结合，应考虑让队列历史通过 GRU/LSTM 隐式传递，而非显式加在 loss 中。
+
+---
+
+### v0.2 — 功率控制模块（已实现，效果有限）
+
+**时间：** 2026 年 4-5 月
+
+**目标：** 在 GAT 输出中增加功率控制头，使调度器不仅决定"哪些链路激活"，还决定"每条链路开多大功率"。
+
+**实现方式：**
+- GAT 输出双头：`[π_i, α_i]`，其中 `π_i ∈ [0,1]` 为激活概率，`α_i ∈ [0,1]` 为功率缩放因子
+- 可达速率修改为：`R_i = α_i × log₂(1 + α_i × SINR_i / Γ)`，其中 Γ 为 SNR gap
+- Loss 添加功率惩罚项：`L = -Σ R_i + λ × Σ α_i`
+
+**实验结果：** 在密集集群（链路数足够多）场景下，功率控制**几乎没有效果提升**。
+
+**原因分析：** 密集集群中，调度决策（"选择开哪几条链路"）已经是决定性能的主要因素。由于可选链路数量充足，简单地通过调度选择"开最好的那几条"已经接近性能上界。功率控制（"每条链路开多亮"）在这个基础上的边际收益极小。
+
+**结论：** 功率控制在密集集群基础调度中价值有限。但如果在以下方向扩展，可能仍有意义：
+- 与**队列感知**结合：优先为积压严重的链路分配更高功率
+- 与**安全约束**结合：为某些链路设定最小功率保证
+- 与**时间记忆模型**结合：在信道动态变化时动态调整功率
+
+**相关脚本：** `experiments/power_control_experiment.py`
+
+**遗留代码：** `models/model.py` 中仍保留 `use_power_control` 和双头输出的实现，代码路径未被删除。
+
+---
+
+### v0.1 — CSI 量化模块（已验证，效果良好）
+
+**时间：** 2026 年 3 月
+
+**目标：** 研究信道状态信息（CSI）不完美性对调度性能的影响。
+
+**实现方式：**
+- 三种 CSI 模式：
+  - `perfect`：理想信道状态
+  - `large_scale`：仅大尺度衰落（路径损耗 + 阴影），不含小尺度
+  - `quantized`：对 SNR 做 q-bit 量化（q = 2, 4, 6, 8）
+- 距离量化：对链路距离做 q-bit 二进制编码作为边特征
+
+**实验结果：** 4-bit 以上量化性能接近完美 CSI，2-bit 量化有明显下降。
+
+**相关脚本：** `experiments/csi_imperfection_study.py`
+
+---
+
+### v0.0 — 基础 GAT 调度（核心模块）
+
+**时间：** 2026 年 3 月之前
+
+**目标：** 构建基于 GAT 的链路调度框架，最大化全网总吞吐量。
+
+**核心设计：**
+- 冲突图建模：节点 = 链路，边 = 干扰关系，边权重 = 干扰强度
+- GAT 消息传递：迭代地从局部邻居学习整体网络态势
+- Loss 函数：`L = -Σ R_i`，直接最大化可达速率之和
+- 自环机制：添加自环确保节点自身信息不丢失
+
+**相关脚本：** `bin/run_experiment.py`，`experiments/scaling_experiment.py`
+
+---
+
+### 进行中 — 时空结合模型（STGNN）
+
+**目标：** 将 GAT（空间推理）与 LSTM/GRU（时间记忆）结合，处理以下场景：
+- **动态信道**：UAV 移动导致大尺度信道连续变化
+- **队列历史**：队列长度的时序积累规律
+- **QoS 公平性**：通过时间记忆实现长期公平性保证
+
+**技术路线：**
+- 信道模型升级：从 block fading 升级到 3GPP TR 38.901 大尺度衰落（路径损耗 + 阴影衰落随位置连续变化）
+- 时间模型选型：**LSTM**（优于 GRU，原因见下）
+- 架构设计：**GRU 先融合时间 → 作为 GAT 的输入特征**（方式 B，保持 GAT 空间模块相对独立）
+- Loss 函数：**仍是 `-Σ π_i × R_i`**，不包含 Q。时间记忆通过 GRU 的隐状态隐式传递
+
+**LSTM 优于 GRU 的理由：**
+- RouteNet-Fermi (Purdue 2024) 的 ablation：在吞吐量相关指标上 LSTM 优于 GRU
+- LSTM 的 cell state 提供显式长期存储，适合队列历史积累
+- 参数量差异不大（LSTM 多约 20% 参数，但你的网络规模下可忽略）
+
+**审稿人问题准备（Q: Why LSTM/GRU instead of ...）：**
+> "We evaluate both LSTM and GRU as temporal encoders following the ablation study of RouteNet-Fermi [ref]. LSTM consistently achieves better performance on throughput-related metrics. The explicit memory cell in LSTM provides more stable long-term storage for queue state evolution, which aligns with our goal of capturing channel correlation over UAV trajectories. This is further supported by Chung et al. [2014], which demonstrates LSTM's superior capability in capturing long-range dependencies."
+
+**待实现（TODO）：**
+- [ ] 修改 `NetworkGenerator` 支持时序生成（UAV 轨迹 → 位置 → 3GPP 信道）
+- [ ] 修改 `QueueSimulator` 支持动态信道（`slots_per_block` 参数）
+- [ ] 实现 LSTM/GAT 联合模型类
+- [ ] 生成多时隙序列训练数据
+- [ ] BPTT 端到端训练
 
 ---
 
@@ -449,50 +530,45 @@ GNN_Scheduling/
 
 ### models/model.py — GATScheduler
 
-
-| 参数             | 说明                                |
-| ------------------ | ------------------------------------- |
-| `raw_node_dim`   | 原始节点特征维度（只用 SNR 时为 1） |
-| `embed_node_dim` | 节点嵌入维度                        |
-| `edge_dim`       | 边特征维度（干扰权重）              |
-| `num_heads`      | 多头注意力头数                      |
-| `T_iterations`   | GAT 消息传递轮数（层数）            |
-| `gat_out_dim`    | GAT 层总输出维度                    |
+| 参数 | 说明 |
+|------|------|
+| `raw_node_dim` | 节点原始特征维度（`USE_QUEUE=false` 时为 1，`USE_QUEUE=true` 时为 2）|
+| `embed_node_dim` | 节点嵌入维度 |
+| `edge_dim` | 边特征维度（干扰权重）|
+| `num_heads` | 多头注意力头数 |
+| `T_iterations` | GAT 消息传递轮数 |
+| `gat_out_dim` | GAT 层总输出维度 |
 
 **输入：** `[num_links, raw_node_dim]` 节点特征 + `[2, num_edges]` 边索引 + `[num_edges, 1]` 边特征
-**输出：** `[num_links, 1]` 每条链路的激活概率 `pi_v ∈ [0,1]`
+**输出：** `[num_links, 1]` 每条链路的激活概率 `π_v ∈ [0,1]`
 
 ### utils/baseline.py — 基线算法
 
+| 算法 | 说明 |
+|------|------|
+| Random | 随机选择链路 |
+| Simple Greedy | 贪心选 SNR 最高的链路 |
+| Local Greedy | 局部干扰感知的贪心调度 |
+| FPLinQ | 分数规划调度算法（Cui et al. 2019） |
+| Spatial DL | 空间深度学习方法（Cui et al. 2019） |
 
-| 算法          | 说明                                |
-| --------------- | ------------------------------------- |
-| Random        | 随机选择链路                        |
-| Simple Greedy | 贪心选 SNR 最高的链路               |
-| Local Greedy  | 局部干扰感知的贪心调度              |
-| FPLinQ        | 分数规划调度算法（Cui et al. 2019） |
-| Spatial DL    | 空间深度学习方法（Cui et al. 2019） |
+### simulator/ — 仿真器模块
 
-### configs/exp_example.yaml — 关键参数
+| 类 | 说明 |
+|----|------|
+| `BaseSimulator` | 仿真器抽象基类 |
+| `SimpleSimulator` | 单时隙评估（无队列，用于训练） |
+| `QueueSimulator` | 多时隙队列仿真（用于队列感知实验） |
 
-
-| 参数                                | 说明                                     |
-| ------------------------------------- | ------------------------------------------ |
-| `NUM_UAV`                           | 无人机/链路数量                          |
-| `CSI_MODE`                          | `perfect` / `large_scale` / `quantized`  |
-| `Q_BITS`                            | 量化比特数（quantized 模式生效）         |
-| `TRAIN_SIZE / VAL_SIZE / TEST_SIZE` | 数据集划分                               |
-| `EPOCHS`                            | 训练轮数                                 |
-| `LR`                                | 学习率                                   |
-| `NUM_GAT_LAYERS`                    | GAT 层数（消息传递迭代次数）             |
-| `SEED`                              | 随机种子（实验复现）                     |
+**QueueSimulator 使用注意：**
+- `include_queue_feature` 必须与模型训练时的 `USE_QUEUE` 一致
+- `arrival_lambda` 需选择合理值（过大则队列爆炸）
 
 ---
 
 ## 训练监控
 
 ```bash
-# 启动 TensorBoard
 tensorboard --logdir=./logs/
 ```
 
@@ -500,7 +576,7 @@ tensorboard --logdir=./logs/
 
 - `train_loss`：训练 loss 曲线
 - `val_utility`：验证集效用曲线
-- `pi_mean` / `pi_std`：链路平均激活概率及标准差
+- `pi_mean` / `pi_std`：链路平均激活概率
 
 ---
 
@@ -508,9 +584,7 @@ tensorboard --logdir=./logs/
 
 1. **参数管理**：所有超参数集中于 `configs/exp_example.yaml`，不要直接改代码。
 2. **实验复现**：务必使用 `--seed` 设置随机种子，相同 seed + 相同配置 = 相同结果。
-3. **数据集缓存**：`DATASET_CACHE_PATH` 控制缓存路径；修改 `NUM_UAV`、`CSI_MODE` 或 `Q_BITS` 时应更新路径避免覆盖。
-4. **GPU 选择**：多卡环境下用 `--gpu-id` 指定；`CSI_MODE=large_scale` 数据生成最快，`quantized` 次之，`perfect` 最慢（因为包含小尺度衰落）。
-5. **Excel 汇总**：`ExperimentRunner` 自动将每次运行结果追加到 `results/all_experiments_summary.xlsx`；各实验组写入不同 sheet：
-   - Sheet1：单次训练（`EXPERIMENT_GROUP=base`）
-   - Sheet2：收敛性分析
-   - Sheet3：CSI 不完美性实验
+3. **数据集缓存**：按 `NUM_UAV` 分离；修改后会自动生成新数据集。
+4. **GPU 选择**：多卡环境下用 `--gpu-id` 指定。
+5. **Excel 汇总**：`ExperimentRunner` 自动将每次运行结果追加到 `results/all_experiments_summary.xlsx`。
+6. **防呆设计**：队列感知实验中若参数不一致，会打印 ERROR 并终止运行。
