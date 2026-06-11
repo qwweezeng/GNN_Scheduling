@@ -98,7 +98,8 @@ class QueueSimulator(BaseSimulator):
         self.current_state = self.net_gen.generate_network(
             csi_mode=csi_mode,
             q_bits=q_bits,
-            queue_states=queue_states
+            queue_states=queue_states,  # [num_uavs] UAV-level, passed from outside
+            include_queue_feature=self.include_queue_feature,
         )
         return self.current_state
     
@@ -121,7 +122,12 @@ class QueueSimulator(BaseSimulator):
             x = state.vertex_features.to(device)
             edge_index = state.edge_index.to(device)
             edge_weights = state.edge_weights.to(device)
-            
+
+            # 非队列感知模型（GAT-base）只吃 SNR 特征，slice 掉队列维度
+            # 队列感知模型（GAT）直接用 [SNR, queue_norm] 完整特征
+            if not self.include_queue_feature and x.size(1) > 1:
+                x = x[:, :1]
+
             result = model(x, edge_index, edge_weights, use_ste=use_ste)
             
             if hasattr(model, 'use_power_control') and model.use_power_control:
@@ -152,9 +158,9 @@ class QueueSimulator(BaseSimulator):
         Returns:
             arrivals: 每条链路的到达包数（packets），从 Poisson(λ) 采样
         """
-        num_links = self.current_state.num_vertices  # 链路数 = UAV 数
+        num_links = self.current_state.num_vertices  # 链路数
         arrivals = torch.poisson(
-            torch.ones(num_links) * self.arrival_lambda
+            torch.ones(num_links, device=self.device) * self.arrival_lambda
         ).float()
         return arrivals
     
@@ -175,51 +181,36 @@ class QueueSimulator(BaseSimulator):
         device = self.device
         state = self.current_state
         
-        # 获取参数
-        link_rates = schedule_result['rates'].squeeze(-1)  # [num_links], bps/Hz
-        active_mask = schedule_result['active_mask'].squeeze(-1)  # [num_links], {0,1}
-        
         # 获取带宽
         bandwidth = getattr(state, 'bandwidth', 5e6)  # 默认 5 MHz
         
-        # 计算每条链路的发送量（packets/slot）
-        # D_i = π_i × R_i × B × τ / L
-        # - π_i ∈ {0,1}：激活决策
-        # - R_i：bps/Hz
-        # - B：Hz
-        # - τ：秒
-        # - L：bits/packet
-        # 结果单位：packets/slot
-        departures_per_link = active_mask * link_rates * bandwidth * self.slot_duration / self.packet_size
-        
-        # 每条链路对应一个发射 UAV，累加到 UAV 的总发送量
-        links = state.links  # [num_links, 2], (tx_idx, rx_idx)
-        num_uavs = self.net_gen.num_uavs
-        departures = torch.zeros(num_uavs, device=device)  # [num_uavs]
-        
-        for link_idx in range(links.size(0)):
-            tx_idx = links[link_idx, 0].item()
-            departures[tx_idx] += departures_per_link[link_idx].item()
-        
+        # 计算 Shannon 容量（理想发送量，packets/slot）
+        # 注意：统一在 self.device 上计算，避免 CPU/GPU 不匹配
+        device = self.device
+        link_rates = schedule_result['rates'].squeeze(-1).to(device)  # [num_links], on device
+        active_mask = schedule_result['active_mask'].squeeze(-1).to(device)  # [num_links], on device
+        departures_computed = active_mask * link_rates * bandwidth * self.slot_duration / self.packet_size
+
         # 生成到达（每条链路独立的泊松到达）
-        arrivals = self._generate_arrivals()  # [num_links]
-        
-        # 队列更新：Q_i(t+1) = max(0, Q_i(t) - D_i(t)) + A_i(t)
-        # 注意：先发送，后到达（标准顺序）
+        arrivals = self._generate_arrivals()  # [num_links], CPU
+
+        # 实际发送量受限于当前队列长度（都在 self.device 上）
+        departures_actual = torch.min(self.queue_states, departures_computed)
+
+        # 队列更新
         self.queue_states = torch.clamp(
-            self.queue_states - departures,
+            self.queue_states - departures_actual,
             min=0.0
         ) + arrivals.to(device)
-        
-        # 计算加权效用（基于当前队列和速率）
-        # utility = Σ Q_i × R_i（加权holtz-werk）
-        utility = torch.sum(self.queue_states.cpu() * link_rates.cpu()).item()
-        
-        # 记录历史
+
+        # 加权效用（都在 CPU 上计算用于记录）
+        R_eff = link_rates.cpu() * bandwidth * self.slot_duration / self.packet_size
+        utility = torch.sum(self.queue_states.cpu() * R_eff).item()
+
+        # 记录历史：用 departures_actual（实际发送量），而非 Shannon 容量
         self.history['queue_lengths'].append(self.queue_states.cpu().clone())
         self.history['arrivals'].append(arrivals.clone())
-        self.history['departures'].append(departures.cpu().clone())
-        self.history['departures_per_link'].append(departures_per_link.detach().cpu().clone())
+        self.history['departures'].append(departures_actual.detach().cpu().clone())
         self.history['active_links'].append(schedule_result['active_indices'])
         self.history['rates'].append(link_rates.detach().cpu().clone())
         self.history['utilities'].append(utility)
@@ -228,7 +219,9 @@ class QueueSimulator(BaseSimulator):
         self.current_state.queue_states = self.queue_states
     
     def run(self, num_slots, csi_mode="perfect", q_bits=8,
-            verbose=True, log_interval=100, **kwargs):
+            verbose=True, log_interval=100,
+            channel_realizations=None,
+            **kwargs):
         """
         运行多时隙队列仿真
         
@@ -242,18 +235,30 @@ class QueueSimulator(BaseSimulator):
             q_bits: 量化比特数
             verbose: 是否打印进度
             log_interval: 打印间隔
+            channel_realizations: 预生成的信道状态列表（用于公平比较）
+                                如果为 None，则每次独立生成（向后兼容）
         
         Returns:
             metrics: dict，包含仿真结果指标
         """
-        # 重置队列（从空队列开始）
-        self.queue_states = torch.zeros(self.net_gen.num_uavs)
-        
-        # 生成初始信道状态
-        self._generate_channel(csi_mode=csi_mode, q_bits=q_bits, queue_states=self.queue_states)
-        
-        # 确定信道更新频率
         slots_per_block = self.slots_per_block if self.slots_per_block else num_slots
+        num_blocks = (num_slots + slots_per_block - 1) // slots_per_block
+        
+        # 初始化队列为空（链路数未知）
+        self.queue_states = None
+        
+        # 预生成信道：为所有调度器共享同一套信道实现（公平比较）
+        if channel_realizations is not None and len(channel_realizations) > 0:
+            import copy
+            channel_realizations = [copy.deepcopy(cr) for cr in channel_realizations]
+        
+        if channel_realizations is not None and len(channel_realizations) > 0:
+            self.current_state = channel_realizations[0]
+        else:
+            self._generate_channel(csi_mode=csi_mode, q_bits=q_bits, queue_states=None)
+        
+        # 初始化队列（全零）
+        self.queue_states = torch.zeros(self.current_state.num_vertices, device=self.device)
         
         if verbose:
             print(f"[QueueSimulator] Configuration:")
@@ -261,7 +266,9 @@ class QueueSimulator(BaseSimulator):
             print(f"  - Slot duration τ: {self.slot_duration * 1000:.1f} ms")
             print(f"  - Packet size: {self.packet_size} bits ({self.packet_size / 8} bytes)")
             print(f"  - Bandwidth: {getattr(self.current_state, 'bandwidth', 5e6) / 1e6:.1f} MHz")
-            if slots_per_block >= num_slots:
+            if channel_realizations is not None:
+                print(f"[QueueSimulator] Fair comparison: {num_blocks} pre-generated channel blocks shared across all schedulers")
+            elif slots_per_block >= num_slots:
                 print(f"[QueueSimulator] Block fading: channel fixed ({num_slots} slots)")
             else:
                 print(f"[QueueSimulator] Block fading: channel updates every {slots_per_block} slots")
@@ -273,7 +280,14 @@ class QueueSimulator(BaseSimulator):
         for t in range(num_slots):
             # 检查是否需要更新信道（块衰落边界）
             if t > 0 and t % slots_per_block == 0:
-                self._generate_channel(csi_mode=csi_mode, q_bits=q_bits, queue_states=self.queue_states)
+                block_idx = t // slots_per_block
+                if channel_realizations is not None and block_idx < len(channel_realizations):
+                    # 使用预生成信道
+                    self.current_state = channel_realizations[block_idx]
+                else:
+                    # 独立生成信道（向后兼容）
+                    self._generate_channel(csi_mode=csi_mode, q_bits=q_bits,
+                                          queue_states=self.queue_states)
                 self.history['channel_updates'].append(t)
                 if verbose:
                     print(f"  [t={t}] Channel updated (block boundary)")
@@ -300,7 +314,7 @@ class QueueSimulator(BaseSimulator):
             print(f"Final max queue: {metrics['max_queue']:.2f}")
             print(f"Total arrivals: {metrics['total_arrivals']:.1f}")
             print(f"Total departures: {metrics['total_departures']:.1f}")
-            print(f"Throughput: {metrics['throughput']:.4f}")
+            print(f"Throughput (ratio): {metrics['throughput_ratio']:.4f}")
             print(f"Queue overflow prob: {metrics['queue_overflow_prob']:.4f}")
         
         return metrics
@@ -321,30 +335,59 @@ class QueueSimulator(BaseSimulator):
         # 基本统计
         avg_queue_per_slot = queue_lengths.mean(dim=1)
         max_queue_per_slot = queue_lengths.max(dim=1)[0]
-        
+
+        # 吞吐量轨迹（cumulative throughput ratio 随时隙变化）
+        cumulative_departures = departures.cumsum(dim=0)  # [num_slots, num_links]
+        cumulative_arrivals = arrivals.cumsum(dim=0)
+        # 避免除零：用 clamp 限制分子分母
+        denom = torch.clamp(cumulative_arrivals.sum(dim=1), min=1e-9).to(departures.device)
+        throughput_trajectory = (cumulative_departures.sum(dim=1) / denom).cpu().numpy()
+        # 每时隙总到达/发送量（packets）
+        arrivals_per_slot = arrivals.sum(dim=1).cpu().numpy()
+        departures_per_slot = departures.sum(dim=1).cpu().numpy()
+
         metrics = {
             # 队列长度统计
             'avg_queue': avg_queue_per_slot[-1].item(),
             'max_queue': max_queue_per_slot[-1].item(),
             'long_term_avg_queue': queue_lengths.mean().item(),
             'long_term_max_queue': queue_lengths.max().item(),
-            
-            # 吞吐量
+
+            # 到达/发送统计
             'total_arrivals': arrivals.sum().item(),
             'total_departures': departures.sum().item(),
-            'throughput': (departures.sum() / arrivals.sum()).item() if arrivals.sum() > 0 else 0,
-            
+
+            # 归一化吞吐量（稳定性比）：departures / arrivals，无量纲，表示到达包中被成功发送的比例
+            # - ≈1.0：系统稳定（到达率 ≤ 服务能力）
+            # - <1.0：系统过载（队列会持续增长）
+            'throughput_ratio': (departures.sum() / arrivals.sum()).item() if arrivals.sum() > 0 else 0,
+
+            # 实际数据吞吐量（Mbps）：真正的网络传输速率
+            # 计算方式：total_packets × packet_size(bits) / total_time(s) / 1e6
+            'throughput_mbps': (
+                departures.sum().item() * self.packet_size / (num_slots * self.slot_duration) / 1e6
+            ) if num_slots > 0 else 0.0,
+
+            # 每链路的平均发送速率（packets/slot）
+            'departure_rate_pps': departures.mean().item(),
+
             # 队列轨迹（用于绘图）
             'queue_trajectory': queue_lengths.cpu().numpy(),
             'avg_queue_trajectory': avg_queue_per_slot.cpu().numpy(),
             'max_queue_trajectory': max_queue_per_slot.cpu().numpy(),
-            
-            # 效用轨迹
+
+            # 吞吐量轨迹（用于绘图）
+            'throughput_trajectory': throughput_trajectory,
+            'arrivals_per_slot': arrivals_per_slot,
+            'departures_per_slot': departures_per_slot,
+
+            # 效用轨迹：Σ Q_i × R_i × B × τ / L，单位是 packets/slot（与 Loss 一致）
+            # 这是在仿真中追踪的"加权holtz-werk"值
             'utility_trajectory': np.array(self.history['utilities']),
-            
+
             # 队列溢出概率
             'queue_overflow_prob': (queue_lengths[-1] > 50).float().mean().item(),
-            
+
             # 稳定性判断
             'is_stable': self._check_stability(queue_lengths),
         }

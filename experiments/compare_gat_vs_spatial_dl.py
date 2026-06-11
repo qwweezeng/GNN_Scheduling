@@ -14,12 +14,19 @@ Usage (example):
 
 import os
 import sys
+import argparse
 import numpy as np
 import torch
+import yaml
 
-from network_generate import NetworkGenerator, NetworkState
+from utils.network_generate import NetworkGenerator, NetworkState
 from models.model import GATScheduler, calculate_achievable_rate
-from utils.baseline import eval_fplinq, eval_spatial_dl, eval_greedy_spatial, build_power_gain_matrix, prune_state
+from utils.baseline import eval_fplinq, eval_spatial_dl, eval_greedy_spatial
+
+
+def load_config(path):
+    with open(path, "r") as f:
+        return yaml.safe_load(f)
 
 # ---- Spatial DL baseline paths ----
 SPATIAL_DL_ROOT = "./baseline/Spatial_Deep_Learning_for_Wireless_Scheduling-master"
@@ -87,6 +94,8 @@ def prune_state(state, keep_indices):
         tx_power=getattr(state, 'tx_power', None),
         carrier_f=getattr(state, 'carrier_f', None),
         csi_mode=getattr(state, 'csi_mode', 'perfect'),
+        queue_states=None,  # pruned state strips queue info
+        include_queue_feature=False,  # only SNR feature is kept after pruning
     )
     return pruned_state
 
@@ -282,20 +291,23 @@ def eval_fplinq(states, use_fading=True):
 # eval_greedy_spatial moved to utils.baseline; experiments script imports it from there.
 
 
-def eval_gat(states, model_path, device):
+def eval_gat(states, model_path, device, cfg):
     """
     Run our GAT model on given states; return list of sum-rates (Mbps).
     """
-    # model hyperparams should match the saved checkpoint
+    # 自动从实际数据推断节点特征维度（与 runner.py 保持一致）
+    # 这样当 use_queue=True 时自动使用 2 维特征
+    sample_state = states[0]
+    node_raw_dim = sample_state.vertex_features.size(1)
     model = GATScheduler(
-        raw_node_dim=1,
-        mlp_hidden_dims=[32, 32],
-        embed_node_dim=32,
-        edge_dim=1,
-        gat_out_dim=48,
-        num_heads=4,
-        T_iterations=4,
-        schedule_hidden_dim=32,
+        raw_node_dim=node_raw_dim,
+        mlp_hidden_dims=cfg.get("MLP_HIDDEN_DIMS", [32, 32]),
+        embed_node_dim=cfg.get("NODE_EMBED_DIM", 32),
+        edge_dim=cfg.get("EDGE_DIM", 1),
+        gat_out_dim=cfg.get("GAT_OUT_DIM", 48),
+        num_heads=cfg.get("NUM_HEADS", 4),
+        T_iterations=cfg.get("NUM_GAT_LAYERS", 4),
+        schedule_hidden_dim=cfg.get("SCHEDULE_HIDDEN", 32),
     ).to(device)
 
     if os.path.exists(model_path):
@@ -319,23 +331,51 @@ def eval_gat(states, model_path, device):
     return sum_rates
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Compare GAT vs Spatial DL baselines")
+    parser.add_argument('--config', '-c', type=str, default='configs/exp_example.yaml')
+    parser.add_argument('--num_uav', type=int, default=None)
+    parser.add_argument('--num_samples', type=int, default=100)
+    parser.add_argument('--gat_model', type=str, default=None,
+                        help='Path to GAT checkpoint (default: auto from logs/)')
+    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--gpu_id', type=int, default=None)
+    return parser.parse_args()
+
+
 def main():
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-    NUM_UAV = 15
-    NUM_SAMPLES = 100
+    args = parse_args()
+    cfg = load_config(args.config)
+
+    if args.num_uav is not None:
+        cfg["NUM_UAV"] = args.num_uav
+    if args.seed is not None:
+        cfg["SEED"] = args.seed
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    num_samples = args.num_samples
+    model_path = args.gat_model
+    if model_path is None:
+        num_uav = cfg.get("NUM_UAV", 40)
+        model_path = f"./results/models/gat_numUAV={num_uav}.pth"
 
     # Generate UAV network samples
-    generator = NetworkGenerator(
-        num_uavs=NUM_UAV,
-        area_width=1000,
-        height_min=50,
-        height_max=150,
-        uav_min_distance=20,
-        tx_power=22,
-        Gt=0,
-        Gr=0,
+    net_gen = NetworkGenerator(
+        num_uavs=cfg.get("NUM_UAV", 40),
+        area_width=cfg.get("AREA_WIDTH", 1000),
+        height_min=cfg.get("HEIGHT_RANGE", [50, 150])[0],
+        height_max=cfg.get("HEIGHT_RANGE", [50, 150])[1],
+        uav_min_distance=cfg.get("MIN_DISTANCE", 20),
+        tx_power=cfg.get("TX_POWER", 10),
+        Gt=cfg.get("G_T", 0),
+        Gr=cfg.get("G_R", 0),
     )
-    states = [generator.generate_network() for _ in range(NUM_SAMPLES)]
+    states = [net_gen.generate_network(include_queue_feature=False)
+              for _ in range(num_samples)]
+
+    print(f"=== Compare: GAT vs Spatial DL ({cfg.get('NUM_UAV', 40)} UAVs, {num_samples} samples) ===")
+    print(f"  Config source : {args.config}")
+    print(f"  Device        : {device}")
 
     print("Running Spatial DL...")
     spatial_sum_rates = eval_spatial_dl(states)
@@ -350,15 +390,14 @@ def main():
     greedy_sum_rates = eval_greedy_spatial(states)
 
     print("Running GAT...")
-    gat_model_path = "./logs/numUAV=15/gat_scheduler_model.pth"  # update to your checkpoint
-    gat_sum_rates = eval_gat(states, gat_model_path, DEVICE)
+    gat_sum_rates = eval_gat(states, model_path, device, cfg)
 
-    print("\n=== Summary (num_uav={}, samples={}) ===".format(NUM_UAV, NUM_SAMPLES))
-    print("Spatial DL           : mean {:.4f} Mbps".format(np.mean(spatial_sum_rates)))
-    print("FPLinQ (fading)      : mean {:.4f} Mbps".format(np.mean(fplinq_fading)))
-    print("FPLinQ (no fading)   : mean {:.4f} Mbps".format(np.mean(fplinq_nofading)))
-    print("Greedy (Spatial DL)  : mean {:.4f} Mbps".format(np.mean(greedy_sum_rates)))
-    print("GAT (ours)           : mean {:.4f} Mbps".format(np.mean(gat_sum_rates)))
+    print(f"\n=== Summary ({cfg.get('NUM_UAV', 40)} UAVs, {num_samples} samples) ===")
+    print(f"  Spatial DL           : mean {np.mean(spatial_sum_rates):.4f} Mbps")
+    print(f"  FPLinQ (fading)     : mean {np.mean(fplinq_fading):.4f} Mbps")
+    print(f"  FPLinQ (no fading)  : mean {np.mean(fplinq_nofading):.4f} Mbps")
+    print(f"  Greedy (Spatial DL)  : mean {np.mean(greedy_sum_rates):.4f} Mbps")
+    print(f"  GAT (ours)          : mean {np.mean(gat_sum_rates):.4f} Mbps")
 
 
 if __name__ == "__main__":

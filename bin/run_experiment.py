@@ -46,19 +46,34 @@ def main():
     parser = argparse.ArgumentParser(description="Run an experiment (wrapper for ExperimentRunner).")
     parser.add_argument("--config", "-c", required=True, help="Path to JSON/YAML experiment config")
     parser.add_argument("--seed", type=int, default=None, help="Random seed (optional)")
-    parser.add_argument("--results", default="./results", help="Results directory")
-    parser.add_argument("--logs", default="./logs", help="Logs / models directory")
+    # Load config first to get default RESULTS_DIR and LOG_DIR from YAML
+    # We use a special nargs='?' approach so --results without value uses the config value
+    parser.add_argument("--results", nargs="?", const=None, default=None,
+                       help="Results directory (default: from config RESULTS_DIR)")
+    parser.add_argument("--logs", nargs="?", const=None, default=None,
+                       help="Logs / models directory (default: from config LOG_DIR)")
     parser.add_argument("--dry-run", action="store_true", help="Load config and do a dry-run (no long training)")
     parser.add_argument("--tx-power", type=float, help="Override TX_POWER (dBm)")
     parser.add_argument("--csi-mode", choices=["perfect", "large_scale", "quantized"], help="Override CSI_MODE")
     parser.add_argument("--q-bits", type=int, help="Override Q_BITS")
     parser.add_argument("--train-size", type=int, help="Override TRAIN_SIZE")
+    parser.add_argument("--use-queue", action="store_true",
+                       help="Enable queue-aware training. When set, NODE_RAW_DIM is automatically set to 2. "
+                            "NOTE: This experiment uses the basic runner. For queue experiments, "
+                            "use: python experiments/run_queue_experiment.py --use-queue ...")
     parser.add_argument("--gpu-id", type=int, default=None, help="GPU ID to use (overrides GPU_ID in config, default: from config)")
     parser.add_argument("--group", help="Experiment group (overrides EXPERIMENT_GROUP)")
     parser.add_argument("--notes", help="Experiment notes (overrides NOTES)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+
+    # Use config values as defaults for results/logs, but CLI overrides take precedence
+    # args.results is None means: not specified on CLI → use config value
+    # args.results is a string means: explicitly passed on CLI → use that value
+    results_dir = args.results if args.results is not None else cfg.get("RESULTS_DIR", "./results")
+    log_dir = args.logs if args.logs is not None else cfg.get("LOG_DIR", "./logs")
+
     if args.seed is not None:
         cfg["SEED"] = args.seed
     # apply CLI overrides if provided
@@ -75,8 +90,17 @@ def main():
     if args.notes is not None:
         cfg["NOTES"] = args.notes
 
+    # apply --use-queue override
+    if args.use_queue:
+        cfg["USE_QUEUE"] = True
+        # 自动推导 NODE_RAW_DIM（如果未在 YAML 中设置）
+        if cfg.get("NODE_RAW_DIM") is None or cfg.get("NODE_RAW_DIM") == 1:
+            cfg["NODE_RAW_DIM"] = 2
+        print("[run_experiment] USE_QUEUE=True: NODE_RAW_DIM forced to {}".format(cfg["NODE_RAW_DIM"]))
+
     print(f"[run_experiment] Loaded config: {args.config}")
-    runner = ExperimentRunner(cfg, results_dir=args.results, log_dir=args.logs, gpu_id=args.gpu_id)
+    print(f"[run_experiment] Results dir: {results_dir}, Logs dir: {log_dir}")
+    runner = ExperimentRunner(cfg, results_dir=results_dir, log_dir=log_dir, gpu_id=args.gpu_id)
 
     if args.dry_run:
         print("[run_experiment] Dry run: generating small dataset and exiting")

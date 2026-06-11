@@ -1,84 +1,127 @@
 ############################################################
-# Experiment configuration file (configs/exp_example.yaml)  #
-# Each field has a short description below.                #
+#  GNN-Scheduling 实验配置文件 (configs/exp_example.yaml)    #
+#                                                        #
+#  【设计原则】                                           #
+#  此文件包含"基础仿真"的全部参数。                       #
+#  任何复杂功能（队列感知、功率控制）默认关闭，             #
+#  从而保证"开箱即用"——不加任何额外参数即可运行。         #
+#                                                        #
+#  【防呆设计】                                          #
+#  USE_QUEUE 和 NODE_RAW_DIM 必须联动，代码会自动检查      #
+#  （见 runner.py）。若不一致，会打印 ERROR 并终止。       #
+#                                                        #
+#  【参数联动速查表】                                    #
+#  ┌────────────┬──────────────┬───────────┬──────────────┐#
+#  │ USE_QUEUE │ NODE_RAW_DIM │ 特征维度  │   Loss 类型  │#
+#  ├────────────┼──────────────┼───────────┼──────────────┤#
+#  │ false(默认)│ 1           │ [SNR]    │ -Σ R_i       │#
+#  │ true      │ 2           │ [SNR,Q]  │ -Σ(Q_i × R_i)│#
+#  └────────────┴──────────────┴───────────┴──────────────┘#
+#                                                        #
+#  【运行实验的正确方式】                                 #
+#  1. 基础吞吐量实验（默认 USE_QUEUE=false）：            #
+#         uv run python bin/run_experiment.py              #
+#              --config configs/exp_example.yaml --seed 42#
+#                                                        #
+#  2. 队列感知实验（必须 USE_QUEUE=true）：               #
+#         uv run python experiments/run_queue_experiment.py#
+#              --use_queue --num_uav 30 --seed 42        #
+#                                                        #
+#  3. 功率控制实验（USE_POWER_CONTROL=true）：            #
+#         uv run python experiments/power_control_experiment.py#
+#                                                        #
+#  ⚠️ 不要在基础 YAML 中启用队列/功率控制，               #
+#     而是通过对应的实验脚本 + CLI 参数来运行。            #
+#                                                        #
 ############################################################
 
+
 # ========== Network / scenario parameters ==========
-NUM_UAV: 40                    # number of UAV links in the scenario (N)
-AREA_WIDTH: 1000               # side length of the square area (meters)
-HEIGHT_RANGE: [50, 150]        # min and max UAV altitude (meters)
-MIN_DISTANCE: 20               # minimum separation distance between UAVs (meters)
-TX_POWER: 10                   # transmit power in dBm (used by channel model)
-G_T: 0                         # transmitter antenna gain in dBi
-G_R: 0                         # receiver antenna gain in dBi
+NUM_UAV: 40
+AREA_WIDTH: 1000
+HEIGHT_RANGE: [50, 150]
+MIN_DISTANCE: 20
+TX_POWER: 10
+G_T: 0
+G_R: 0
 
 # ========== Wireless communication parameters ==========
-BANDWIDTH: !!float 5e6         # System bandwidth (Hz) - 5 MHz
-CARRIER_FREQ: !!float 2.4e9    # Carrier frequency (Hz) - 2.4 GHz
-NOISE_PSD: -169                # Noise power spectral density (dBm/Hz)
-SNR_GAP_DB: 0                  # SNR gap (dB) - 0 means no gap
-SNR_THRES: 5                   # SNR threshold (dB) for link activation
+BANDWIDTH: !!float 5e6
+CARRIER_FREQ: !!float 2.4e9
+NOISE_PSD: -169
+SNR_GAP_DB: 0
+SNR_THRES: 5
 
 # ========== CSI mode ==========
-# 信道信息模式（统一控制：模型输入 + loss/utility 计算）
-# perfect    : 完美CSI，含小尺度衰落（默认）
-# large_scale: 仅大尺度衰落（路径损耗），无小尺度随机性
-# quantized  : 量化距离近似（大尺度）
+# CSI_MODE 统一控制：模型输入特征 + 速率计算
+#   perfect    : 完美CSI，含小尺度衰落（默认）
+#   large_scale: 仅大尺度衰落（路径损耗），无小尺度随机性
+#   quantized  : 量化距离近似（大尺度 + 量化误差）
 CSI_MODE: "perfect"
-Q_BITS: 8                      # 量化比特数（仅 CSI_MODE="quantized" 时生效）
+Q_BITS: 8
 
 # ========== Model architecture ==========
-NODE_RAW_DIM: 1                 # 节点原始特征维度（1 = SNR only）
-MLP_HIDDEN_DIMS: [32, 32]      # MLP hidden dims for initial node embedding
-NODE_EMBED_DIM: 32             # node embedding output dimension
-EDGE_DIM: 1                    # edge attribute dimension (interference weight)
-NUM_HEADS: 4                   # number of attention heads for GAT
-GAT_OUT_DIM: 48               # total output dimension from GAT layer (all heads)
-NUM_GAT_LAYERS: 4             # number of GAT layers / message-passing iterations
-SCHEDULE_HIDDEN: 32           # hidden size for final scheduling MLP
+# 【联动参数】NODE_RAW_DIM 必须与 USE_QUEUE 保持一致：
+#   USE_QUEUE=false → NODE_RAW_DIM=1（仅 SNR）
+#   USE_QUEUE=true  → NODE_RAW_DIM=2（SNR + queue_normalized）
+# 代码会自动检查不一致并报错。
+NODE_RAW_DIM: 1
+
+MLP_HIDDEN_DIMS: [32, 32]
+NODE_EMBED_DIM: 32
+EDGE_DIM: 1
+NUM_HEADS: 4
+GAT_OUT_DIM: 48
+NUM_GAT_LAYERS: 4
+SCHEDULE_HIDDEN: 32
 
 # ========== Power control ==========
-USE_POWER_CONTROL: false        # 是否启用功率控制（启用后模型输出 (pi, alpha)）
-POWER_HIDDEN_DIM: 16          # 功率控制 MLP 隐藏层维度
+# ⚠️ 启用功率控制请使用 experiments/power_control_experiment.py
+#    此文件为基础配置，不在基础 YAML 中启用
+USE_POWER_CONTROL: false
+POWER_HIDDEN_DIM: 16
 
 # ========== Queue simulation parameters ==========
-USE_QUEUE: false               # 是否启用队列感知训练（MWS loss）
-QUEUE_AWARE_LOSS: true        # 是否使用队列加权 loss（与 USE_QUEUE 配合）
-ARRIVAL_LAMBDA: 0.5            # 泊松到达过程的均值（packets/slot）
-SLOT_DURATION: 0.001           # 时隙长度 τ（秒），例如 0.001 = 1ms
-PACKET_SIZE: 12000             # 包大小（bits），例如 12000 = 1500 bytes
+# 【联动参数】USE_QUEUE 必须与 NODE_RAW_DIM 联动：
+#   USE_QUEUE=false → NODE_RAW_DIM=1 → loss=-Σ R_i（纯吞吐量最大化）
+#   USE_QUEUE=true  → NODE_RAW_DIM=2 → loss=-Σ(Q_i×R_i)（MWS加权）
+# ⚠️ 启用队列实验请使用 experiments/run_queue_experiment.py --use_queue
+#    此文件为基础配置，USE_QUEUE 保持 false
+USE_QUEUE: false
+ARRIVAL_LAMBDA: 0.5
+SLOT_DURATION: 0.001
+PACKET_SIZE: 12000
 
 # ========== Training / scheduler / clipping ==========
-LR: 0.0001                    # optimizer learning rate (Adam)
-EPOCHS: 30                     # number of training epochs
-BATCH_SIZE: 1                  # per-sample processing (set >1 only if batching supported)
+LR: 0.0001
+EPOCHS: 30
+BATCH_SIZE: 1
 
-# Learning rate scheduler
-LR_SCHEDULER_TYPE: "ReduceLROnPlateau"   # options: ReduceLROnPlateau, StepLR, None
-LR_SCHEDULER_CONFIG:                    # used when LR_SCHEDULER_TYPE == ReduceLROnPlateau
+LR_SCHEDULER_TYPE: "ReduceLROnPlateau"
+LR_SCHEDULER_CONFIG:
   mode: "max"
   factor: 0.5
   patience: 10
   min_lr: 0.00001
 
-# Gradient clipping
-GRAD_CLIP_CONFIG:                       # gradient clipping configuration
+GRAD_CLIP_CONFIG:
   explosion_threshold: 100
   explosion_clip: 10.0
   normal_clip: 5.0
 
 # ========== Dataset ==========
-TRAIN_SIZE: 500                # number of training samples to generate / load
-VAL_SIZE: 128                 # number of validation samples
-TEST_SIZE: 128                # number of test samples
-DATASET_CACHE_PATH: './datasets/dataset_numUAV=40.pkl'  # path to pickled dataset file
-GEN_BATCH_SIZE: 50           # batch size used when generating datasets to avoid OOM
+TRAIN_SIZE: 500
+VAL_SIZE: 128
+TEST_SIZE: 128
+# 【重要】数据集按 NUM_UAV 分离缓存，修改 NUM_UAV 后会自动生成新数据集
+DATASET_CACHE_PATH: './datasets/dataset_numUAV=40.pkl'
+GEN_BATCH_SIZE: 50
 
 # ========== Evaluation ==========
-EVAL_INTERVAL: 1               # run validation every N epochs
-CONFLICT_WARMUP: 10           # number of epochs to gradually increase conflict penalty
-EVAL_METRICS: ["sum_rate"]   # list of eval metrics to compute
-EVAL_BASELINES: false        # 是否评估基线算法
+EVAL_INTERVAL: 1
+CONFLICT_WARMUP: 10
+EVAL_METRICS: ["sum_rate"]
+EVAL_BASELINES: false
 BASELINE_SPATIALDL: true
 BASELINE_FPLINQ: true
 BASELINE_GREEDY: true
@@ -87,16 +130,16 @@ BASELINE_PARAMS:
   use_fading_in_baselines: true
 
 # ========== Runtime / logging ==========
-RESULTS_DIR: "./results"      # where to save CSV/JSON
-LOG_DIR: "./logs"            # where to save model checkpoints / tensorboard logs
-SAVE_MODEL: true             # whether to save final model checkpoint
+RESULTS_DIR: "./results"
+LOG_DIR: "./logs"
+SAVE_MODEL: true
 
 # ========== Reproducibility ==========
-SEED: 10086                   # global random seed (overridable by CLI --seed)
+SEED: 10086
 
 # ========== Regularization ==========
-DROPOUT: 0.0                 # dropout probability used in MLPs (0.0 = no dropout)
-ACTIVATION: "relu"           # activation in MLPs: relu, gelu, tanh
+DROPOUT: 0.0
+ACTIVATION: "relu"
 
 # ========== Experiment metadata ==========
 EXPERIMENT_GROUP: "base"
@@ -104,5 +147,5 @@ EXCEL_SHEET: "Sheet1"
 NOTES: "baseline experiment"
 
 # ========== Device ==========
-DEVICE: "auto"               # 'auto' for GPU detection, or 'cpu'/'cuda:X'
-GPU_ID: 0                   # GPU ID to use when DEVICE is 'auto' (0, 1, 2, ...)
+DEVICE: "auto"
+GPU_ID: 0

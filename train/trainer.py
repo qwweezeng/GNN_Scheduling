@@ -10,11 +10,17 @@ from utils.baseline import eval_baseline
 
 class Trainer:
     def __init__(self, model, optimizer, device=None, gpu_id=None, log_dir="./logs",
-                 grad_clip_config=None, use_power_control=False, use_queue=False):
+                 grad_clip_config=None, use_power_control=False, use_queue=False,
+                 bandwidth=5e6, slot_duration=0.001, packet_size=12000):
         self.model = model
         self.optimizer = optimizer
         self.use_power_control = use_power_control
         self.use_queue = use_queue  # 是否启用队列感知训练（MWS加权loss）
+
+        # 通信参数（用于单位换算，当前代码中仅 queue 模式使用 departures 换算）
+        self.bandwidth = bandwidth       # Hz
+        self.slot_duration = slot_duration  # s
+        self.packet_size = packet_size   # bits/packet
 
         # Auto-detect GPU if no device specified or device is "auto"
         if device is None or device == "auto":

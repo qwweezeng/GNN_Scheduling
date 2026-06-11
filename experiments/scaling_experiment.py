@@ -47,25 +47,40 @@ def get_model_library_path(base_dir="./results/models"):
     return base_dir
 
 
-def get_model_path(model_library, num_uav, prefix="scaling"):
-    """获取指定 numUAV 的模型保存路径"""
-    return os.path.join(model_library, f"{prefix}_numUAV{num_uav}.pth")
+def get_model_path(model_library, num_uav):
+    """
+    获取指定 numUAV 的模型保存路径。
+
+    【命名规范】与 run_queue_experiment.py 完全一致：
+      gat_numUAV=<N>.pth
+    """
+    return os.path.join(model_library, f"gat_numUAV={num_uav}.pth")
 
 
-def save_model(model, model_library, num_uav, prefix="scaling"):
+def save_model(model, model_library, num_uav):
     """保存模型到模型库"""
-    model_path = get_model_path(model_library, num_uav, prefix)
+    model_path = get_model_path(model_library, num_uav)
     torch.save(model.state_dict(), model_path)
     print(f"  [Save] Model saved to {model_path}")
     return model_path
 
 
-def load_model(model_library, num_uav, model_params, device, prefix="scaling"):
-    """从模型库加载模型"""
-    model_path = get_model_path(model_library, num_uav, prefix)
+def load_model(model_library, num_uav, model_params, device):
+    """
+    从模型库加载模型。
+
+    【兼容性】优先尝试新格式 gat_numUAV=<N>.pth，
+    若不存在则尝试旧格式 scaling_numUAV<N>.pth（向后兼容已有文件）。
+    """
+    # 新格式优先
+    new_path = os.path.join(model_library, f"gat_numUAV={num_uav}.pth")
+    # 旧格式兜底（向后兼容）
+    old_path = os.path.join(model_library, f"scaling_numUAV{num_uav}.pth")
+
+    model_path = new_path if os.path.exists(new_path) else old_path
     if not os.path.exists(model_path):
         return None, None
-    
+
     model = GATScheduler(
         raw_node_dim=model_params["raw_node_dim"],
         mlp_hidden_dims=model_params["mlp_hidden_dims"],
@@ -75,7 +90,9 @@ def load_model(model_library, num_uav, model_params, device, prefix="scaling"):
         num_heads=model_params["num_heads"],
         T_iterations=model_params["T_iterations"],
         schedule_hidden_dim=model_params["schedule_hidden_dim"],
-        dropout=model_params["dropout"]
+        dropout=model_params["dropout"],
+        use_power_control=model_params.get("use_power_control", False),
+        power_hidden_dim=model_params.get("power_hidden_dim", 16),
     )
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
@@ -137,7 +154,9 @@ def run_paired_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
         "num_heads": base_cfg.get("NUM_HEADS", 4),
         "T_iterations": base_cfg.get("NUM_GAT_LAYERS", 4),
         "schedule_hidden_dim": base_cfg.get("SCHEDULE_HIDDEN", 32),
-        "dropout": base_cfg.get("DROPOUT", 0.0)
+        "dropout": base_cfg.get("DROPOUT", 0.0),
+        "use_power_control": base_cfg.get("USE_POWER_CONTROL", False),
+        "power_hidden_dim": base_cfg.get("POWER_HIDDEN_DIM", 16),
     }
 
     # 确定 device
@@ -236,11 +255,14 @@ def run_paired_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
                 )
                 csi_mode = test_cfg.get("CSI_MODE", "perfect")
                 q_bits = test_cfg.get("Q_BITS", 8)
+                # scaling 实验默认不使用队列特征（纯吞吐量实验）
+                include_queue_feature = test_cfg.get("USE_QUEUE", False)
                 test_set = generate_dataset(
                     test_cfg.get("TEST_SIZE", 20), gen,
                     batch_size=test_cfg.get("GEN_BATCH_SIZE", 50),
                     csi_mode=test_cfg.get("CSI_MODE", "perfect"),
                     q_bits=q_bits,
+                    include_queue_feature=include_queue_feature,
                 )
             else:
                 with open(cache_path, "rb") as f:
@@ -300,7 +322,9 @@ def run_mixed_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
         "num_heads": base_cfg.get("NUM_HEADS", 4),
         "T_iterations": base_cfg.get("NUM_GAT_LAYERS", 4),
         "schedule_hidden_dim": base_cfg.get("SCHEDULE_HIDDEN", 32),
-        "dropout": base_cfg.get("DROPOUT", 0.0)
+        "dropout": base_cfg.get("DROPOUT", 0.0),
+        "use_power_control": base_cfg.get("USE_POWER_CONTROL", False),
+        "power_hidden_dim": base_cfg.get("POWER_HIDDEN_DIM", 16),
     }
 
     # 确定 device
@@ -355,7 +379,7 @@ def run_mixed_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
     
     if use_existing_models:
         # 尝试加载混合模型
-        model_path = os.path.join(model_library, f"mixed_numUAV{mixed_name}.pth")
+        model_path = os.path.join(model_library, f"mixed_numUAV={mixed_name}.pth")
         if os.path.exists(model_path):
             trained_model = GATScheduler(
                 raw_node_dim=model_params["raw_node_dim"],
@@ -366,7 +390,9 @@ def run_mixed_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
                 num_heads=model_params["num_heads"],
                 T_iterations=model_params["T_iterations"],
                 schedule_hidden_dim=model_params["schedule_hidden_dim"],
-                dropout=model_params["dropout"]
+                dropout=model_params["dropout"],
+                use_power_control=model_params.get("use_power_control", False),
+                power_hidden_dim=model_params.get("power_hidden_dim", 16),
             )
             trained_model.load_state_dict(torch.load(model_path, map_location=device))
             trained_model.to(device)
@@ -388,7 +414,9 @@ def run_mixed_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
             num_heads=model_params["num_heads"],
             T_iterations=model_params["T_iterations"],
             schedule_hidden_dim=model_params["schedule_hidden_dim"],
-            dropout=model_params["dropout"]
+            dropout=model_params["dropout"],
+            use_power_control=model_params.get("use_power_control", False),
+            power_hidden_dim=model_params.get("power_hidden_dim", 16),
         )
 
         optimizer = torch.optim.Adam(model.parameters(), lr=base_cfg.get("LR", 1e-4))
@@ -403,7 +431,7 @@ def run_mixed_experiment(config_path, train_sizes, test_sizes, quick, gpu_id,
         best_val_util = trained["best_val_util"]
 
         # 保存混合模型
-        mixed_model_path = os.path.join(model_library, f"mixed_numUAV{mixed_name}.pth")
+        mixed_model_path = os.path.join(model_library, f"mixed_numUAV={mixed_name}.pth")
         torch.save(trained_model.state_dict(), mixed_model_path)
         print(f"  [Save] Mixed model saved to {mixed_model_path}")
         print(f"  Best val utility: {best_val_util:.2f}")

@@ -101,7 +101,7 @@ def save_experiment_results(trained_model, train_set, test_util, params,
         "convergence_epoch": convergence_epoch
     }
 
-    # save model to results/models/
+    # save model to experiment directory (results/exp_XXX/)
     save_model_flag = params.get("SAVE_MODEL", True)
     if save_model_flag:
         try:
@@ -150,7 +150,9 @@ def save_experiment_results(trained_model, train_set, test_util, params,
     return {"excel_path": excel_path, "json_path": json_path, "experiment_id": experiment_id, "experiment_dir": experiment_dir}
 
 
-def generate_dataset(num_samples, simulator, batch_size=100, csi_mode="perfect", q_bits=8):
+def generate_dataset(num_samples, simulator, batch_size=100, csi_mode="perfect", q_bits=8,
+                    include_queue_feature=True,
+                    queue_mode="random", queue_range=(0, 25), poisson_lambda=None):
     """
     Generate dataset in batches to avoid memory overflow.
     Used by ExperimentRunner.
@@ -162,13 +164,28 @@ def generate_dataset(num_samples, simulator, batch_size=100, csi_mode="perfect",
         csi_mode: "perfect" | "large_scale" | "quantized"
             Controls model input and rate computation uniformly.
         q_bits: number of quantization bits (only used when csi_mode == "quantized")
+        include_queue_feature: 是否在节点特征中包含队列长度
+            - True:  [SNR_dB, queue_normalized] (2维)，用于队列感知训练/仿真
+            - False: [SNR_dB]                   (1维)，用于纯吞吐量最大化实验
+            应与 USE_QUEUE 参数保持一致。
+        queue_mode: 队列状态生成模式
+            - "random":  uniform[queue_range[0], queue_range[1])  ← 训练推荐
+            - "poisson": Poisson(poisson_lambda)
+        queue_range: 仅 queue_mode="random" 时生效，(min, max)
+        poisson_lambda: 仅 queue_mode="poisson" 时生效
     """
     dataset = []
     for i in range(0, num_samples, batch_size):
         batch_end = min(i + batch_size, num_samples)
         batch = []
         for _ in range(i, batch_end):
-            sample = simulator.generate_network(csi_mode=csi_mode, q_bits=q_bits)
+            sample = simulator.generate_network(
+                csi_mode=csi_mode, q_bits=q_bits,
+                include_queue_feature=include_queue_feature,
+                queue_mode=queue_mode,
+                queue_range=queue_range,
+                poisson_lambda=poisson_lambda,
+            )
             batch.append(sample)
         dataset.extend(batch)
         if (i + batch_size) % 50 == 0 or batch_end == num_samples:

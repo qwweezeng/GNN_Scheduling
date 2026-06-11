@@ -25,17 +25,23 @@ class SimpleSimulator:
     - 整个仿真期间信道保持不变
     """
     
-    def __init__(self, network_generator, model, device='cpu', seed=None):
+    def __init__(self, network_generator, model, device='cpu', seed=None,
+                 include_queue_feature=False):
         """
         Args:
             network_generator: NetworkGenerator 实例
             model: 调度模型
             device: 计算设备
             seed: 随机种子
+            include_queue_feature: 是否在节点特征中包含队列长度
+                - True:  [SNR_dB, queue_normalized] (2维)
+                - False: [SNR_dB]                   (1维)
+                应与模型训练时的 NODE_RAW_DIM 保持一致。
         """
         self.net_gen = network_generator
         self.model = model
         self.device = device
+        self.include_queue_feature = include_queue_feature
         
         if seed is not None:
             torch.manual_seed(seed)
@@ -61,6 +67,7 @@ class SimpleSimulator:
         self.current_state = self.net_gen.generate_network(
             csi_mode=csi_mode,
             q_bits=q_bits,
+            include_queue_feature=self.include_queue_feature,
         )
         return self.current_state
     

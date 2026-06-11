@@ -53,6 +53,11 @@ class ExperimentRunner:
         q_bits = p.get("Q_BITS", 8)
         print(f"[runner] CSI_MODE={csi_mode}, Q_BITS={q_bits}")
 
+        # 队列感知开关（定义在使用点之前，与 include_queue_feature 联动）
+        use_queue = p.get("USE_QUEUE", False)
+        include_queue_feature = use_queue
+        print(f"[runner] USE_QUEUE={use_queue}, include_queue_feature={include_queue_feature}")
+
         cache_path = p.get("DATASET_CACHE_PATH")
 
         # 初始化数据集变量
@@ -80,6 +85,15 @@ class ExperimentRunner:
                 test_set = full_test_set[:test_size] if len(full_test_set) >= test_size else full_test_set
 
                 print(f"[runner] Sampled from cache: train={len(train_set)}/{len(full_train_set)}, val={len(val_set)}/{len(full_val_set)}, test={len(test_set)}/{len(full_test_set)}")
+
+                # 【安全检查】验证缓存数据的 include_queue_feature 是否与当前配置一致
+                if len(val_set) > 0:
+                    cached_include_queue = getattr(val_set[0], 'include_queue_feature', None)
+                    if cached_include_queue != include_queue_feature:
+                        print(f"[runner] WARNING: Cached data include_queue_feature={cached_include_queue}, "
+                              f"but current USE_QUEUE={use_queue}. This may cause dimension mismatch!")
+                        print(f"[runner] Expected vertex_features dim: {1 if not use_queue else 2}, "
+                              f"cached dim: {val_set[0].vertex_features.size(1)}")
             except Exception as e:
                 print(f"[runner] Failed to load cache {cache_path}: {e}, will generate new datasets")
                 train_set = val_set = test_set = None
@@ -91,18 +105,21 @@ class ExperimentRunner:
                 batch_size=p.get("GEN_BATCH_SIZE", 50),
                 csi_mode=csi_mode,
                 q_bits=q_bits,
+                include_queue_feature=include_queue_feature,
             )
             val_set = generate_dataset(
                 p.get("VAL_SIZE", 20), gen,
                 batch_size=p.get("GEN_BATCH_SIZE", 50),
                 csi_mode=csi_mode,
                 q_bits=q_bits,
+                include_queue_feature=include_queue_feature,
             )
             test_set = generate_dataset(
                 p.get("TEST_SIZE", 20), gen,
                 batch_size=p.get("GEN_BATCH_SIZE", 50),
                 csi_mode=csi_mode,
                 q_bits=q_bits,
+                include_queue_feature=include_queue_feature,
             )
             print(f"[runner] Generated datasets: train={len(train_set)}, val={len(val_set)}, test={len(test_set)}")
 
@@ -135,8 +152,9 @@ class ExperimentRunner:
         power_hidden_dim = p.get("POWER_HIDDEN_DIM", 16)
         print(f"[runner] USE_POWER_CONTROL={use_power_control}")
 
-        # 队列感知开关
-        use_queue = p.get("USE_QUEUE", False)
+        # 队列感知开关（已在前面定义）
+        # use_queue = p.get("USE_QUEUE", False)
+        # include_queue_feature = use_queue
         print(f"[runner] USE_QUEUE={use_queue}")
 
         # Determine node input dimensionality.

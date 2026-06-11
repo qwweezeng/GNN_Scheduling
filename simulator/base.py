@@ -48,29 +48,36 @@ class BaseSimulator(ABC):
         └─────────────────────────────────────────────┘
     """
     
-    def __init__(self, network_generator, model, device='cpu', seed=None):
+    def __init__(self, network_generator, model, device='cpu', seed=None,
+                 include_queue_feature=False):
         """
         Args:
             network_generator: NetworkGenerator 实例
             model: 调度模型
             device: 计算设备
             seed: 随机种子
+            include_queue_feature: 是否在节点特征中包含队列长度
+                - True:  [SNR_dB, queue_normalized] (2维)，用于队列感知训练/仿真
+                - False: [SNR_dB]                   (1维)，用于纯吞吐量最大化实验（默认）
+                ⚠️ 此参数需与 USE_QUEUE 配置保持一致，否则会导致特征维度不匹配。
         """
         self.net_gen = network_generator
         self.model = model
         self.device = device
         self.seed = seed
-        
+        # 队列特征开关：SimpleSimulator 默认 False，QueueSimulator 通过 configure() 设置
+        self.include_queue_feature = include_queue_feature
+
         if seed is not None:
             self._set_seed(seed)
-        
+
         # 历史记录
         self.history = defaultdict(list)
-        
+
         # 当前状态
         self.current_state = None
         self.slot = 0
-        
+
         # 调用子类初始化
         self._init()
     
@@ -90,11 +97,11 @@ class BaseSimulator(ABC):
     def _generate_channel(self, csi_mode="perfect", q_bits=8):
         """
         子类实现：生成信道状态
-        
+
         Args:
             csi_mode: 信道状态信息模式
             q_bits: 量化比特数
-        
+
         Returns:
             state: NetworkState 对象
         """
@@ -210,6 +217,7 @@ class SimpleSimulator(BaseSimulator):
         self.current_state = self.net_gen.generate_network(
             csi_mode=csi_mode,
             q_bits=q_bits,
+            include_queue_feature=self.include_queue_feature,
         )
         return self.current_state
     

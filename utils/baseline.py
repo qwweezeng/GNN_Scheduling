@@ -529,9 +529,10 @@ def eval_baseline(dataset, baseline_names=None):
                 continue
 
             rates = calculate_achievable_rate(pi, state, binary=True)
-            # x = state.vertex_features.to("cpu")
-            # Q = x[:, 1]  # 队列长度
-            Q = 1
+            if hasattr(state, 'queue_states') and state.queue_states is not None:
+                Q = state.queue_states
+            else:
+                Q = torch.ones(state.num_vertices)
             util = torch.sum(torch.round(pi) * Q * rates).item()
             total_util += util
         avg_util = total_util / len(dataset)
@@ -539,7 +540,7 @@ def eval_baseline(dataset, baseline_names=None):
     return results
 
 if __name__ == '__main__':
-    with open("./datasets/dataset.pkl", "rb") as f:
+    with open("./datasets/dataset_numUAV=10.pkl", "rb") as f:
         datasets = pkl.load(f)
     val_set = datasets.get('val_set')
     if val_set is None:

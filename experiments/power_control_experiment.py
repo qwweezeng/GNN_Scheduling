@@ -155,21 +155,26 @@ def run_power_control_experiment(params, use_power_control,
             train_set = val_set = test_set = None
 
     if train_set is None or val_set is None or test_set is None:
-        print("[runner] Generating new datasets...")
+        # 功率控制实验默认不使用队列特征（纯吞吐量最大化）
+        include_queue_feature = params.get("USE_QUEUE", False)
+        print("[runner] Generating new datasets (include_queue_feature={})...".format(include_queue_feature))
         train_set = generate_dataset(
             params.get("TRAIN_SIZE", 300), gen,
             batch_size=params.get("GEN_BATCH_SIZE", 50),
             csi_mode=csi_mode, q_bits=q_bits,
+            include_queue_feature=include_queue_feature,
         )
         val_set = generate_dataset(
             params.get("VAL_SIZE", 50), gen,
             batch_size=params.get("GEN_BATCH_SIZE", 50),
             csi_mode=csi_mode, q_bits=q_bits,
+            include_queue_feature=include_queue_feature,
         )
         test_set = generate_dataset(
             params.get("TEST_SIZE", 50), gen,
             batch_size=params.get("GEN_BATCH_SIZE", 50),
             csi_mode=csi_mode, q_bits=q_bits,
+            include_queue_feature=include_queue_feature,
         )
         print(f"[runner] Generated: train={len(train_set)}, val={len(val_set)}, test={len(test_set)}")
 
@@ -177,8 +182,20 @@ def run_power_control_experiment(params, use_power_control,
     val_counts = [int(s.links.size(0)) for s in val_set]
     print(f"[runner] Val set link counts — avg: {np.mean(val_counts):.1f}, median: {np.median(val_counts):.1f}")
 
+    # 从实际数据推断节点特征维度（最可靠）
+    # 基础配置 NODE_RAW_DIM=1 用于纯吞吐量实验
+    # 功率控制实验默认不使用队列感知
+    use_queue = params.get("USE_QUEUE", False)
+    expected_dim = 2 if use_queue else 1
+    sample_x = val_set[0].vertex_features
+    actual_dim = sample_x.size(1)
+    if actual_dim != expected_dim:
+        print(f"[Warning] Dataset feature dim={actual_dim} but expected={expected_dim} for USE_QUEUE={use_queue}. "
+              f"Using actual_dim={actual_dim}.")
+    print(f"[Model] Input feature dimension: {actual_dim} (use_queue={use_queue})")
+
     # 创建模型
-    node_raw_dim = params.get("NODE_RAW_DIM", 1)
+    node_raw_dim = actual_dim
     mlp_hidden = params.get("MLP_HIDDEN_DIMS", [32, 32])
     model = GATScheduler(
         raw_node_dim=node_raw_dim,
@@ -224,6 +241,7 @@ def run_power_control_experiment(params, use_power_control,
         log_dir=logs_dir,
         grad_clip_config=params.get("GRAD_CLIP_CONFIG", None),
         use_power_control=use_power_control,
+        use_queue=use_queue,
     )
 
     # 训练
@@ -234,10 +252,11 @@ def run_power_control_experiment(params, use_power_control,
         eval_interval=params.get("EVAL_INTERVAL", 1),
         lr_scheduler=lr_scheduler,
         use_power_control=use_power_control,
+        use_queue=use_queue,
     )
 
     # 评估
-    test_result = trainer.evaluate(model, test_set, use_power_control=use_power_control)
+    test_result = trainer.evaluate(model, test_set, use_power_control=use_power_control, use_queue=use_queue)
     if use_power_control:
         test_util, test_alpha = test_result
     else:
