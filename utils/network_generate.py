@@ -99,12 +99,13 @@ class NetworkGenerator:
             positions[i] = new_pos
         return positions
 
-    def _generate_queue_states(self, mode="random",
+    def _generate_queue_states(self, num_queues, mode="random",
                               queue_range=(0, 25), poisson_lambda=None):
         """
-        生成初始队列状态。
+        生成 link-level 初始队列状态。
 
         Args:
+            num_queues: 队列数量；在链路调度中等于当前 conflict graph 的节点数
             mode: 生成模式
                 - "random":  uniform[queue_range[0], queue_range[1])  ← 训练数据推荐
                 - "poisson": Poisson(poisson_lambda)                   ← 备选
@@ -113,10 +114,10 @@ class NetworkGenerator:
         """
         if mode == "random":
             lo, hi = queue_range
-            queue_states = torch.randint(low=lo, high=hi, size=(self.num_uavs,)).float()
+            queue_states = torch.randint(low=lo, high=hi, size=(num_queues,)).float()
         elif mode == "poisson":
             lam = poisson_lambda if poisson_lambda is not None else self.flow_lambda
-            queue_states = torch.poisson(torch.ones(self.num_uavs) * lam)
+            queue_states = torch.poisson(torch.ones(num_queues) * lam)
         else:
             raise ValueError(f"Unknown queue mode: {mode}")
         return queue_states.float()
@@ -155,7 +156,8 @@ class NetworkGenerator:
                 new_pos[under, i] = 2 * self.height_min - new_pos[under, i]
 
         self.positions = new_pos
-        self.queue_states += torch.poisson(torch.ones(self.num_uavs) * 0.5 * time_step)
+        if hasattr(self, "queue_states") and self.queue_states is not None:
+            self.queue_states += torch.poisson(torch.ones_like(self.queue_states) * 0.5 * time_step)
 
     # 生成网络主函数，一定有很多问题，注意打断点查看
     # csi_mode: "perfect" | "large_scale" | "quantized"
@@ -164,15 +166,7 @@ class NetworkGenerator:
                         queue_states=None, include_queue_feature=False,
                         queue_range=(0, 25), poisson_lambda=None):
         positions = self._init_positions()
-        if queue_states is not None:
-            # 使用外部传入的队列状态（如仿真过程中的动态队列）
-            self.queue_states = queue_states
-        else:
-            self.queue_states = self._generate_queue_states(
-                mode=queue_mode,
-                queue_range=queue_range,
-                poisson_lambda=poisson_lambda
-            )
+        external_queue_states = queue_states
         self.include_queue_feature = include_queue_feature
         dist, h, snr, large_scale = self._channel_gain(positions)
         snr_thres_beta = 10 ** (self.snr_thres / 10)
@@ -220,12 +214,30 @@ class NetworkGenerator:
         else:
             rate_power = signal_power
 
-        # per-link queue states: each link's weight = tx UAV's queue length
-        if self.queue_states is not None:
-            tx_indices = src  # [num_links]
-            link_queue_states = self.queue_states[tx_indices]  # [num_links]
+        # link-level queue states: each conflict-graph node (communication link)
+        # owns one independent queue.
+        if external_queue_states is not None:
+            if isinstance(external_queue_states, torch.Tensor):
+                q = external_queue_states.detach().float()
+            else:
+                q = torch.tensor(external_queue_states, dtype=torch.float32)
+            if q.numel() == num_links:
+                link_queue_states = q.clone()
+            else:
+                raise ValueError(
+                    "queue_states must be link-level: "
+                    f"got {q.numel()} entries, expected {num_links} links."
+                )
+        elif include_queue_feature:
+            link_queue_states = self._generate_queue_states(
+                num_links,
+                mode=queue_mode,
+                queue_range=queue_range,
+                poisson_lambda=poisson_lambda
+            )
         else:
             link_queue_states = None
+        self.queue_states = link_queue_states
 
         # calculate vertex feature and edge weight
         for u_idx in range(num_links):
@@ -331,6 +343,7 @@ class NetworkGenerator:
             carrier_f=self.carrier_f,
             csi_mode=csi_mode,
             queue_states=link_queue_states,
+            include_queue_feature=include_queue_feature,
         )
 
     def visualize_network(self, state, save_path=None):

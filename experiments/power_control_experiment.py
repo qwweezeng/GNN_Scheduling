@@ -126,6 +126,7 @@ def run_power_control_experiment(params, use_power_control,
 
     # 数据集缓存
     cache_path = params.get("DATASET_CACHE_PATH")
+    include_queue_feature = params.get("USE_QUEUE", False)
 
     # 尝试从缓存加载数据集
     train_set = None
@@ -150,13 +151,27 @@ def run_power_control_experiment(params, use_power_control,
             test_set = full_test_set[:test_size]
 
             print(f"[runner] Sampled from cache: train={len(train_set)}, val={len(val_set)}, test={len(test_set)}")
+            if len(val_set) > 0:
+                cached_include_queue = getattr(val_set[0], 'include_queue_feature', None)
+                queue_shape_ok = True
+                if include_queue_feature:
+                    q = getattr(val_set[0], 'queue_states', None)
+                    queue_shape_ok = (
+                        q is not None
+                        and q.numel() == val_set[0].num_vertices
+                        and val_set[0].vertex_features.size(1) >= 2
+                    )
+                if cached_include_queue != include_queue_feature or not queue_shape_ok:
+                    print(f"[runner] Cached queue metadata mismatch "
+                          f"(include_queue={cached_include_queue}, "
+                          f"queue_shape_ok={queue_shape_ok}); regenerating.")
+                    train_set = val_set = test_set = None
         except Exception as e:
             print(f"[runner] Failed to load cache: {e}, generating new datasets")
             train_set = val_set = test_set = None
 
     if train_set is None or val_set is None or test_set is None:
         # 功率控制实验默认不使用队列特征（纯吞吐量最大化）
-        include_queue_feature = params.get("USE_QUEUE", False)
         print("[runner] Generating new datasets (include_queue_feature={})...".format(include_queue_feature))
         train_set = generate_dataset(
             params.get("TRAIN_SIZE", 300), gen,

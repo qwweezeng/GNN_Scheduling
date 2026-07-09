@@ -86,14 +86,24 @@ class ExperimentRunner:
 
                 print(f"[runner] Sampled from cache: train={len(train_set)}/{len(full_train_set)}, val={len(val_set)}/{len(full_val_set)}, test={len(test_set)}/{len(full_test_set)}")
 
-                # 【安全检查】验证缓存数据的 include_queue_feature 是否与当前配置一致
+                # 【安全检查】验证缓存数据的 include_queue_feature 与 link-level 队列语义
                 if len(val_set) > 0:
                     cached_include_queue = getattr(val_set[0], 'include_queue_feature', None)
-                    if cached_include_queue != include_queue_feature:
+                    queue_shape_ok = True
+                    if include_queue_feature:
+                        q = getattr(val_set[0], 'queue_states', None)
+                        queue_shape_ok = (
+                            q is not None
+                            and q.numel() == val_set[0].num_vertices
+                            and val_set[0].vertex_features.size(1) >= 2
+                        )
+                    if cached_include_queue != include_queue_feature or not queue_shape_ok:
                         print(f"[runner] WARNING: Cached data include_queue_feature={cached_include_queue}, "
-                              f"but current USE_QUEUE={use_queue}. This may cause dimension mismatch!")
+                              f"but current USE_QUEUE={use_queue}, queue_shape_ok={queue_shape_ok}. "
+                              "Will regenerate.")
                         print(f"[runner] Expected vertex_features dim: {1 if not use_queue else 2}, "
                               f"cached dim: {val_set[0].vertex_features.size(1)}")
+                        train_set = val_set = test_set = None
             except Exception as e:
                 print(f"[runner] Failed to load cache {cache_path}: {e}, will generate new datasets")
                 train_set = val_set = test_set = None
@@ -246,5 +256,4 @@ class ExperimentRunner:
                 print(f"[runner] Failed to run baselines: {e}")
 
         return {"trained": trained, "test_util": test_util}
-
 

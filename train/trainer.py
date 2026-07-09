@@ -144,7 +144,7 @@ class Trainer:
                 pi_stds.append(pi.std().item())
                 
                 # 队列感知MWS加权
-                if self.use_queue:
+                if use_queue:
                     # 从 vertex_features 提取归一化队列（第二维）
                     # vertex_features 格式: [SNR_dB, queue_normalized]
                     queue_norm = x[:, 1].clone()  # [num_links]
@@ -285,5 +285,4 @@ class Trainer:
             "best_val_util": best_val_util,
             "final_train_loss": float(avg_loss) if 'avg_loss' in locals() else None
         }
-
 

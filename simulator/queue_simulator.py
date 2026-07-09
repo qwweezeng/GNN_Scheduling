@@ -63,6 +63,42 @@ class QueueSimulator(BaseSimulator):
         
         # 信道块参数
         self.slots_per_block = None  # None 表示全程不变
+
+        # 外部预生成的到达过程；用于同一 Monte Carlo seed 内公平比较不同调度器
+        self._arrival_realizations = None
+
+    def _sync_queue_features(self):
+        """
+        将仿真器中的真实动态队列同步到当前 NetworkState。
+
+        Queue-aware GAT 的输入来自 state.vertex_features，因此只更新
+        state.queue_states 还不够；第二维队列特征也必须在每次调度前
+        反映当前时隙的 Q(t)。
+        """
+        if self.current_state is None or self.queue_states is None:
+            return
+
+        state = self.current_state
+        q = self.queue_states.detach().float()
+        if q.numel() != state.num_vertices:
+            raise ValueError(
+                "Queue length mismatch: "
+                f"queue_states has {q.numel()} entries, "
+                f"but current state has {state.num_vertices} links."
+            )
+
+        state.queue_states = q.to(state.vertex_features.device)
+
+        if not self.include_queue_feature:
+            return
+
+        queue_feature = torch.log1p(torch.clamp(q, min=0.0)) / 10.0
+        queue_feature = queue_feature.to(state.vertex_features.device).unsqueeze(1)
+
+        if state.vertex_features.size(1) == 1:
+            state.vertex_features = torch.cat([state.vertex_features, queue_feature], dim=1)
+        else:
+            state.vertex_features[:, 1] = queue_feature.squeeze(1)
     
     def configure(self, arrival_lambda=0.5, 
                   slot_duration=0.001, packet_size=12000,
@@ -98,7 +134,7 @@ class QueueSimulator(BaseSimulator):
         self.current_state = self.net_gen.generate_network(
             csi_mode=csi_mode,
             q_bits=q_bits,
-            queue_states=queue_states,  # [num_uavs] UAV-level, passed from outside
+            queue_states=queue_states,  # [num_links] link-level, passed from outside
             include_queue_feature=self.include_queue_feature,
         )
         return self.current_state
@@ -117,6 +153,7 @@ class QueueSimulator(BaseSimulator):
         device = self.device
         model = self.model
         model.eval()
+        self._sync_queue_features()
         
         with torch.no_grad():
             x = state.vertex_features.to(device)
@@ -159,6 +196,16 @@ class QueueSimulator(BaseSimulator):
             arrivals: 每条链路的到达包数（packets），从 Poisson(λ) 采样
         """
         num_links = self.current_state.num_vertices  # 链路数
+        if self._arrival_realizations is not None:
+            arrivals = self._arrival_realizations[self.slot]
+            if arrivals.numel() != num_links:
+                raise ValueError(
+                    "Arrival length mismatch: "
+                    f"arrival trace has {arrivals.numel()} entries, "
+                    f"but current state has {num_links} links."
+                )
+            return arrivals.to(self.device).float()
+
         arrivals = torch.poisson(
             torch.ones(num_links, device=self.device) * self.arrival_lambda
         ).float()
@@ -191,8 +238,8 @@ class QueueSimulator(BaseSimulator):
         active_mask = schedule_result['active_mask'].squeeze(-1).to(device)  # [num_links], on device
         departures_computed = active_mask * link_rates * bandwidth * self.slot_duration / self.packet_size
 
-        # 生成到达（每条链路独立的泊松到达）
-        arrivals = self._generate_arrivals()  # [num_links], CPU
+        # 生成到达：默认独立泊松采样；公平比较时可来自共享 arrival trace。
+        arrivals = self._generate_arrivals()  # [num_links]
 
         # 实际发送量受限于当前队列长度（都在 self.device 上）
         departures_actual = torch.min(self.queue_states, departures_computed)
@@ -216,11 +263,12 @@ class QueueSimulator(BaseSimulator):
         self.history['utilities'].append(utility)
         
         # 更新 NetworkState 中的队列（用于下一时隙的特征输入）
-        self.current_state.queue_states = self.queue_states
+        self._sync_queue_features()
     
     def run(self, num_slots, csi_mode="perfect", q_bits=8,
             verbose=True, log_interval=100,
             channel_realizations=None,
+            arrival_realizations=None,
             **kwargs):
         """
         运行多时隙队列仿真
@@ -237,12 +285,19 @@ class QueueSimulator(BaseSimulator):
             log_interval: 打印间隔
             channel_realizations: 预生成的信道状态列表（用于公平比较）
                                 如果为 None，则每次独立生成（向后兼容）
+            arrival_realizations: 预生成的到达过程，shape=[num_slots, num_links]。
+                                  如果为 None，则每个调度器独立采样泊松到达（向后兼容）。
         
         Returns:
             metrics: dict，包含仿真结果指标
         """
         slots_per_block = self.slots_per_block if self.slots_per_block else num_slots
         num_blocks = (num_slots + slots_per_block - 1) // slots_per_block
+
+        # 同一个 simulator 对象重复 run 时清空历史和时隙计数。
+        self.history.clear()
+        self.slot = 0
+        self._arrival_realizations = None
         
         # 初始化队列为空（链路数未知）
         self.queue_states = None
@@ -259,6 +314,21 @@ class QueueSimulator(BaseSimulator):
         
         # 初始化队列（全零）
         self.queue_states = torch.zeros(self.current_state.num_vertices, device=self.device)
+        self._sync_queue_features()
+
+        if arrival_realizations is not None:
+            if isinstance(arrival_realizations, torch.Tensor):
+                arrivals_tensor = arrival_realizations.detach().clone().float()
+            else:
+                arrivals_tensor = torch.as_tensor(np.asarray(arrival_realizations), dtype=torch.float32)
+
+            expected_shape = (num_slots, self.current_state.num_vertices)
+            if tuple(arrivals_tensor.shape) != expected_shape:
+                raise ValueError(
+                    "arrival_realizations shape mismatch: "
+                    f"expected {expected_shape}, got {tuple(arrivals_tensor.shape)}."
+                )
+            self._arrival_realizations = arrivals_tensor.to(self.device)
         
         if verbose:
             print(f"[QueueSimulator] Configuration:")
@@ -268,6 +338,8 @@ class QueueSimulator(BaseSimulator):
             print(f"  - Bandwidth: {getattr(self.current_state, 'bandwidth', 5e6) / 1e6:.1f} MHz")
             if channel_realizations is not None:
                 print(f"[QueueSimulator] Fair comparison: {num_blocks} pre-generated channel blocks shared across all schedulers")
+            if self._arrival_realizations is not None:
+                print(f"[QueueSimulator] Fair comparison: pre-generated arrival trace shared across all schedulers")
             elif slots_per_block >= num_slots:
                 print(f"[QueueSimulator] Block fading: channel fixed ({num_slots} slots)")
             else:
@@ -326,7 +398,7 @@ class QueueSimulator(BaseSimulator):
         Returns:
             metrics: dict，包含各类指标
         """
-        queue_lengths = torch.stack(self.history['queue_lengths'])  # [num_slots, num_uavs]
+        queue_lengths = torch.stack(self.history['queue_lengths'])  # [num_slots, num_links]
         arrivals = torch.stack(self.history['arrivals'])
         departures = torch.stack(self.history['departures'])
         
@@ -335,6 +407,29 @@ class QueueSimulator(BaseSimulator):
         # 基本统计
         avg_queue_per_slot = queue_lengths.mean(dim=1)
         max_queue_per_slot = queue_lengths.max(dim=1)[0]
+        total_queue_per_slot = queue_lengths.sum(dim=1)
+        avg_queue_backlog = queue_lengths.mean().item()
+        avg_total_queue_backlog = total_queue_per_slot.mean().item()
+        avg_departure_rate_pps = departures.mean().item()
+        avg_arrival_rate_pps = arrivals.mean().item()
+        avg_total_departure_rate_pps = departures.sum(dim=1).mean().item()
+        avg_total_arrival_rate_pps = arrivals.sum(dim=1).mean().item()
+
+        # Little's law delay estimate:
+        #   W = L / lambda_eff
+        # Here L is the time-average per-link backlog, and lambda_eff is the
+        # per-link delivered packet rate. This approximates delay of delivered
+        # traffic without adding packet-level FIFO bookkeeping.
+        if avg_queue_backlog <= 0:
+            average_delay_slots = 0.0
+        elif avg_departure_rate_pps <= 0:
+            average_delay_slots = None
+        else:
+            average_delay_slots = avg_queue_backlog / avg_departure_rate_pps
+        average_delay_ms = (
+            average_delay_slots * self.slot_duration * 1000.0
+            if average_delay_slots is not None else None
+        )
 
         # 吞吐量轨迹（cumulative throughput ratio 随时隙变化）
         cumulative_departures = departures.cumsum(dim=0)  # [num_slots, num_links]
@@ -349,13 +444,23 @@ class QueueSimulator(BaseSimulator):
         metrics = {
             # 队列长度统计
             'avg_queue': avg_queue_per_slot[-1].item(),
+            'final_avg_queue': avg_queue_per_slot[-1].item(),
             'max_queue': max_queue_per_slot[-1].item(),
+            'final_max_queue': max_queue_per_slot[-1].item(),
             'long_term_avg_queue': queue_lengths.mean().item(),
             'long_term_max_queue': queue_lengths.max().item(),
+            'average_queue_backlog': avg_queue_backlog,
+            'average_queue_backlog_mbit': avg_queue_backlog * self.packet_size / 1e6,
+            'average_total_queue_backlog': avg_total_queue_backlog,
+            'average_total_queue_backlog_mbit': avg_total_queue_backlog * self.packet_size / 1e6,
+            'average_delay_slots': average_delay_slots,
+            'average_delay_ms': average_delay_ms,
 
             # 到达/发送统计
             'total_arrivals': arrivals.sum().item(),
             'total_departures': departures.sum().item(),
+            'arrival_rate_pps': avg_arrival_rate_pps,
+            'arrival_total_rate_pps': avg_total_arrival_rate_pps,
 
             # 归一化吞吐量（稳定性比）：departures / arrivals，无量纲，表示到达包中被成功发送的比例
             # - ≈1.0：系统稳定（到达率 ≤ 服务能力）
@@ -369,12 +474,16 @@ class QueueSimulator(BaseSimulator):
             ) if num_slots > 0 else 0.0,
 
             # 每链路的平均发送速率（packets/slot）
-            'departure_rate_pps': departures.mean().item(),
+            'departure_rate_pps': avg_departure_rate_pps,
+            'departure_total_rate_pps': avg_total_departure_rate_pps,
 
             # 队列轨迹（用于绘图）
             'queue_trajectory': queue_lengths.cpu().numpy(),
             'avg_queue_trajectory': avg_queue_per_slot.cpu().numpy(),
             'max_queue_trajectory': max_queue_per_slot.cpu().numpy(),
+            'queue_backlog_mbit_trajectory': (
+                avg_queue_per_slot * self.packet_size / 1e6
+            ).cpu().numpy(),
 
             # 吞吐量轨迹（用于绘图）
             'throughput_trajectory': throughput_trajectory,

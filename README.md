@@ -28,6 +28,20 @@ uv pip install -r pyproject.toml
 pip install torch numpy matplotlib networkx tensorboard pyyaml pandas openpyxl
 ```
 
+如果使用本机已有的 `conda/pytorch` 环境，可以把 README 中的：
+
+```bash
+uv run python <script.py> ...
+```
+
+等价替换为：
+
+```bash
+conda run --no-capture-output -n pytorch python -u <script.py> ...
+```
+
+其中 `--no-capture-output` 和 `python -u` 用于实时显示输出，适合长时间训练或多时隙仿真。
+
 ---
 
 ## 参数联动速查表（重要！）
@@ -45,17 +59,22 @@ pip install torch numpy matplotlib networkx tensorboard pyyaml pandas openpyxl
 **运行命令：**
 
 ```bash
-# 队列感知实验（默认参数）
-uv run python experiments/run_queue_experiment.py --num_uav 30 --seed 42
+# 队列感知实验（快速单 seed 验证）
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --arrival_rates 0.5 --num_slots 1000 --seed 42
 
-# 自定义数据集规模和训练轮数
+# 队列感知实验（推荐正式比较：paired Monte Carlo）
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --arrival_rates 0.5,1.0,2.0,4.0 --num_slots 5000 --seed 42 --mc_runs 5
+
+# 自定义数据集规模和训练轮数；若模型已存在，会优先加载而不是重新训练
 uv run python experiments/run_queue_experiment.py --num_uav 30 \
     --train_size 500 --val_size 64 --test_size 64 --epochs 30 --seed 42
 ```
 
 **数据集目录：**
 - 非队列数据：`datasets/dataset_numUAV=<N>.pkl`（与 `bin/run_experiment.py` 共用）
-- 队列数据：`datasets/queue/dataset_numUAV=<N>.pkl`（队列实验专用）
+- 队列数据：`datasets/queue/dataset_numUAV=<N>_linklevel.pkl`（队列实验专用，link-level 队列）
 
 **标准模型库：**
 - 非队列模型：`results/models/gat_numUAV=<N>.pth`（Loss = -Σ R_i）
@@ -129,20 +148,57 @@ uv run python bin/run_experiment.py --config configs/exp_example.yaml \
 ### 2. 队列感知实验
 
 ```bash
-# 队列感知实验（训练 + 多时隙仿真）
-uv run python experiments/run_queue_experiment.py --num_uav 30 --seed 42
+# 队列感知实验（训练/加载模型 + 多时隙仿真）
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --arrival_rates 0.5 --num_slots 5000 --seed 42
 
 # 自定义数据集规模
 uv run python experiments/run_queue_experiment.py --num_uav 30 \
     --train_size 500 --val_size 64 --test_size 64 --seed 42
 
-# 测试不同到达率
+# 测试不同全网总到达率；每个 Λ 都会独立生成共享的 channel/arrival trace
 uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --arrival_rates 0.5,1.0,2.0,3.0 --num_slots 5000 --seed 42
+    --arrival_rates 0.5,1.0,2.0,4.0 --num_slots 5000 --seed 42 --mc_runs 5
+
+# 显式指定 Monte Carlo seeds；会覆盖 --mc_runs
+uv run python experiments/run_queue_experiment.py --num_uav 30 \
+    --arrival_rates 0.5 --num_slots 5000 --mc_seeds 42,43,44,45,46
 ```
 
 > **注意**：`run_queue_experiment.py` 固定使用队列感知模式（MWS 加权 loss），
 > 数据集存储在 `datasets/queue/` 目录，与基础实验的 `datasets/` 分离。
+> 正式比较 GAT 与 GAT-base 时，推荐使用 `--mc_runs` 或 `--mc_seeds`，避免单次随机到达过程造成误判。
+
+**命令行参数说明：**
+
+| 参数 | 默认值 | 含义 | 什么时候改 |
+|------|--------|------|------------|
+| `--num_uav` | `30` | UAV 数量；链路数会随拓扑随机生成而变化 | 做不同网络规模实验时修改 |
+| `--arrival_rates` | `0.5,1.0,1.5,2.0` | 全网总泊松到达率 Λ，单位 packets/slot；脚本会按 link-level hotspot 模型分配到各链路，并满足 `sum_i λ_i = Λ` | 做负载扫描时修改 |
+| `--num_slots` | `5000` | 每个 Λ、每个 MC seed 的仿真时隙数 | 快速测试可设小，正式实验建议 5000 或更大 |
+| `--seed` | `42` | 训练/数据加载的主 seed；未指定 `--mc_seeds` 时，也作为 MC seed 起点 | 复现实验时固定 |
+| `--mc_runs` | `1` | Monte Carlo 次数；脚本会使用 `seed, seed+1, ...` | 正式比较建议 5-20 |
+| `--mc_seeds` | 空 | 显式指定 Monte Carlo seeds，例如 `42,43,44`；优先级高于 `--mc_runs` | 需要严格复现实验批次时使用 |
+| `--slots_per_block` | `0` | 信道块长度；`0` 表示整个仿真周期信道固定，正整数表示每 N 个 slot 更新一次信道 | 做快变信道实验时修改 |
+| `--train_size` | `500` | 训练快照数量 | 重新训练模型或做样本量实验时修改 |
+| `--val_size` | `64` | 验证快照数量 | 通常不用改 |
+| `--test_size` | `64` | 测试快照数量 | 通常不用改 |
+| `--epochs` | `30` | 训练轮数；若模型文件已存在，则优先加载模型，不会训练 | 重新训练时修改 |
+| `--lr` | `1e-4` | 学习率 | 训练不收敛时再调 |
+| `--queue_range` | `0,200` | 训练快照中的随机队列范围；用于覆盖仿真中可能出现的队列状态 | 队列明显超过训练范围时调大 |
+
+**Monte Carlo 公平比较逻辑：**
+
+```text
+for each λ:
+  for each mc_seed:
+    生成一套共享 channel trace
+    生成一套共享 arrival trace
+    GAT / GAT-base / Random / Greedy 都跑同一套随机过程
+  对多个 seed 的结果取 mean / std / 95% CI
+```
+
+这样做的目的不是固定死某一组到达包数，而是做 paired comparison：同一轮中算法面对完全相同的业务到达，不同轮之间再重新采样，最终用 Monte Carlo 平均降低随机波动。
 
 **实验对比的调度算法：**
 
@@ -230,24 +286,82 @@ uv run python -m experiments.convergence_analysis --gpu-id 0
 
 ### 关键参数说明
 
-| 参数 | 说明 | 单位 |
-|------|------|------|
-| `arrival_lambda` | 泊松到达均值 | packets/slot |
-| `slot_duration` | 时隙长度 τ | 秒 |
-| `packet_size` | 包大小 | bits |
-| `num_slots` | 仿真时隙数 | slots |
+| 参数 | 来源 | 说明 | 单位 |
+|------|------|------|------|
+| `arrival_lambda` | `--arrival_rates` | 全网总泊松到达均值 Λ；脚本内部再生成每条链路的 `λ_i` | packets/slot |
+| `num_slots` | `--num_slots` | 每个到达率、每个 MC seed 的仿真时隙数 | slots |
+| `slot_duration` | config / 默认值 | 时隙长度 τ | 秒 |
+| `packet_size` | config / 默认值 | 包大小 L | bits |
+| `bandwidth` | config / `NetworkState` | 带宽 B，用于把 `R_i` 换算成 packets/slot | Hz |
+| `slots_per_block` | `--slots_per_block` | 信道块长度；`0` 为全程固定信道，正整数为每 N 个 slot 更新一次 | slots |
+| `mc_runs` | `--mc_runs` | Monte Carlo 次数；用于降低随机到达过程的偶然性 | runs |
+| `mc_seeds` | `--mc_seeds` | 显式 MC seed 列表；优先级高于 `mc_runs` | — |
+
+**内部接口说明：**
+
+| 参数 | 所在位置 | 是否命令行参数 | 作用 |
+|------|----------|----------------|------|
+| `channel_realizations` | `QueueSimulator.run()` | 否 | 预生成信道块；同一 MC seed 内所有调度算法共享 |
+| `arrival_realizations` | `QueueSimulator.run()` | 否 | 预生成到达矩阵，shape 为 `[num_slots, num_links]`；同一 MC seed 内所有调度算法共享 |
+| `include_queue_feature` | `QueueSimulator(...)` | 否 | 控制模型输入是否包含队列特征；GAT 使用 `[SNR, Q]`，GAT-base 只使用 `[SNR]` |
+
+`arrival_realizations` 不需要手动设置。正常运行 `run_queue_experiment.py` 时，脚本会根据 `--arrival_rates` 和 `--mc_seeds` 自动生成它。
+
+**到达率怎么选：**
+
+`--arrival_rates` 中的 Λ 是全网总到达率，不再是 per-link 到达率。当前默认使用 link-level hotspot 业务模型：随机选择约 20% 链路作为热点链路，让它们承担 70% 总业务；其余约 80% 链路承担 30% 背景业务。每条链路的到达率满足：
+
+```text
+sum_i lambda_i = Lambda
+
+i in hotspot:
+    lambda_i = 0.7 * Lambda / num_hotspot_links
+
+i not in hotspot:
+    lambda_i = 0.3 * Lambda / num_normal_links
+```
+
+例如当前拓扑有 `num_links=80`，且 `Λ=4 packets/slot`，则全网平均每 slot 到达约 4 个包，不会再变成 `4 × 80` 个包。热点链路的 per-link 到达率约为普通链路的 9 倍，因此更容易形成重点中继/热点区域的队列压力。建议先用 `0.5,1.0,2.0,4.0,8.0` 做短仿真扫描，再选择低负载、中等负载、过载三组点做正式 MC 实验。
 
 ### 性能指标
 
 | 指标 | 说明 | 单位 |
 |------|------|-------|
-| `avg_queue` | 最终平均队列长度 | packets |
+| `final_avg_queue` / `avg_queue` | 仿真结束时的平均队列长度；`avg_queue` 是历史兼容别名 | packets |
+| `final_max_queue` / `max_queue` | 仿真结束时的最大队列长度；`max_queue` 是历史兼容别名 | packets |
 | `long_term_avg_queue` | 长期平均队列长度 | packets |
-| `throughput` | 吞吐量比（departures/arrivals） | 无量纲，≈1 表示稳定 |
+| `average_queue_backlog` | 平均队列积压，等价于 `long_term_avg_queue` 的论文指标命名 | packets/link |
+| `average_queue_backlog_mbit` | 平均队列积压换算成 Mbit | Mbit/link |
+| `average_delay_slots` | Little's law 估计的平均排队时延 | slots |
+| `average_delay_ms` | Little's law 估计的平均排队时延 | ms |
+| `throughput_ratio` | 吞吐量比（departures/arrivals） | 无量纲，≈1 表示稳定 |
 | `throughput_mbps` | 实际网络总吞吐量 | Mbps |
 | `departure_rate_pps` | 每链路平均发送速率 | packets/slot |
+| `arrival_total_rate_pps` | 全网每时隙平均到达包数 | packets/slot |
+| `departure_total_rate_pps` | 全网每时隙平均发送包数 | packets/slot |
+| `hotspot_avg_queue_mbit` | 热点链路平均队列积压 | Mbit/link |
+| `normal_avg_queue_mbit` | 普通链路平均队列积压 | Mbit/link |
 | `queue_overflow_prob` | 溢出概率（Q > 50 的比例） | — |
-| `is_stable` | 稳定性判断 | True/False |
+| `is_stable` | 最近窗口内队列增长斜率是否接近 0 | True/False/None |
+
+**读结果时优先看：**
+
+1. `average_queue_backlog_mbit`：平均队列积压，对应 MAB 论文 Fig.4 类似指标。
+2. `average_delay_ms`：平均时延估计，对应 MAB 论文 Fig.5 类似指标。
+3. `long_term_avg_queue`：长期平均队列，更适合评价整体队列稳定性。
+4. `final_avg_queue`：最后时刻队列，对尾部随机波动更敏感。
+5. `throughput_ratio`：实际发送包数 / 到达包数；在过载场景下通常远小于 1。
+6. `*_ci95`：Monte Carlo 95% 置信区间半宽。若两个算法均值差小于 CI，不能轻易说谁显著更好。
+
+当前 `average_delay_ms` 是 Little's law 估计：
+
+```text
+average_delay_slots = average_queue_backlog / departure_rate_pps
+average_delay_ms    = average_delay_slots × slot_duration × 1000
+```
+
+这个口径不需要逐包 FIFO 记录，适合当前队列仿真快速对比。若后续需要严格统计 “successfully delivered packets” 的真实等待时间，需要额外维护每条链路的 packet age 队列。
+如果某个方法在某个 MC seed 中没有成功发送任何包，则该轮 delay 无定义，结果中会记为 `None`；汇总表会显示 `N/A` 或仅对有效 delay 样本求平均。
 
 > **关键对比**：GAT vs GAT-base 决定了队列感知特征 `[SNR, Q]` 是否有额外价值。
 
@@ -315,10 +429,12 @@ results/
 │   ├── exp_<numUAV>_<timestamp>_model.pth       # 训练模型快照
 │   └── exp_<numUAV>_<timestamp>_baselines.json  # 基线算法对比结果
 │
-├── queue_exp<timestamp>_s<seed>/            # 队列感知实验输出（run_queue_experiment.py）
-│   ├── simulation_results.json              # 仿真结果 JSON
-│   ├── trajectory_lambda<λ>.png             # 队列长度/吞吐量轨迹图
-│   └── queue_comparison_bar.png             # 各算法平均队列长度柱状图
+├── queue_exp<timestamp>_s<seed>_mc<K>/      # 队列感知实验输出（run_queue_experiment.py）
+│   ├── simulation_results.json              # Monte Carlo 汇总结果 JSON
+│   ├── simulation_runs.json                 # 每个 MC seed 的紧凑明细
+│   ├── trajectory_lambda<λ>.png             # 队列长度/发送量/吞吐量轨迹图
+│   ├── queue_backlog_delay_vs_lambda.png    # 平均队列积压/平均时延随 λ 变化图
+│   └── queue_comparison_bar.png             # 各算法最终平均队列长度柱状图
 │
 ├── img/                                      # 论文图表（utils/plot_paper.py 生成）
 │   ├── baseline_comparison.{eps,png}        # 各算法吞吐量对比
@@ -341,21 +457,21 @@ results/
 
 > 注意：`scaling_*.pth` 命名不带 `=`，`gat_*_numUAV=*.pth` 带 `=`。
 
-> **注意**：`gat_numUAV=<N>.pth` 和 `gat_queue_numUAV=<N>.pth` 共用同一套数据集（`datasets/` 和 `datasets/queue/`），可通过 `run_queue_experiment.py` 中的 GAT vs GAT-base 对比来验证队列感知特征的价值。
+> **注意**：`gat_numUAV=<N>.pth` 使用非队列数据集（`datasets/`），`gat_queue_numUAV=<N>.pth` 使用 link-level 队列数据集（`datasets/queue/*_linklevel.pkl`），可通过 `run_queue_experiment.py` 中的 GAT vs GAT-base 对比来验证队列感知特征的价值。
 
 ### 实验目录命名规则
 
 **基础实验** `exp_<numUAV>_<YYYYMMDD>_<HHMM>`：
 - `exp_20_20260130_2147`：numUAV=20，2026年1月30日 21:47 运行
 
-**队列实验** `queue_exp<YYYYMMDD>_<HHMM>_s<seed>`：
-- `queue_exp20260521_1100_s42`：队列实验，2026年5月21日 11:00，seed=42
-- `s<seed>` 后缀表示随机种子（默认 seed=42），用于实验复现
-- 6 个带 `s42` 的目录中，5 个含 `simulation_results.json`（成功），1 个为空（失败或中断）
+**队列实验** `queue_exp<YYYYMMDD>_<HHMM>_s<seed>_mc<K>`：
+- `queue_exp20260707_2323_s42_mc2`：队列实验，2026年7月7日 23:23，训练 seed=42，Monte Carlo 共 2 轮
+- `s<seed>` 表示训练/数据加载主 seed；未显式指定 `--mc_seeds` 时，MC seeds 默认为 `seed, seed+1, ...`
+- `mc<K>` 表示 Monte Carlo 轮数；正式比较时建议 `K>=5`
 
 ### Queue 实验结果解读（simulation_results.json）
 
-每个实验对比 4 种调度算法，字段含义如下：
+`simulation_results.json` 保存 Monte Carlo 汇总结果。每个实验对比 4 种调度算法，字段含义如下：
 
 | 算法 | 说明 | 特征输入 | 调度依据 |
 |------|------|----------|----------|
@@ -364,14 +480,29 @@ results/
 | `Random` | 随机调度 | — | 均匀概率激活 |
 | `Greedy` | 贪心调度 | `[SNR]` | 选 SNR 最高的链路 |
 
-结果按到达率 λ 分组，格式为 `<algo>_<λ>`（如 `GAT_0.5`）。关键指标：
+结果按全网总到达率 Λ 分组，格式为 `<algo>_<Λ>`（如 `GAT_0.5`）。每个 key 下包含标量均值、标准差、95% CI 和平均轨迹。关键指标：
 
 | 指标 | 说明 | 稳定判断 |
 |------|------|----------|
-| `avg_queue` | 仿真结束时平均队列长度 |越小越好 |
-| `throughput` | 吞吐量比（departures/arrivals） | ≈ 1 表示稳定 |
-| `is_stable` | 稳定性判断（throughput ≥ 0.95） | True/False |
-| `queue_overflow_prob` | 队列溢出概率（Q > 50） |越小越好 |
+| `num_mc_runs` | Monte Carlo 轮数 | 越大越稳，但运行越慢 |
+| `mc_seeds` | 实际使用的 MC seeds | 用于复现 |
+| `final_avg_queue` | 仿真结束时平均队列长度 | 越小越好，但对尾部随机波动敏感 |
+| `long_term_avg_queue` | 全时隙、全链路平均队列长度 | 更适合评价长期队列性能 |
+| `average_queue_backlog_mbit` | 平均队列积压，Mbit/link | 越小越好 |
+| `average_delay_ms` | Little's law 估计平均时延 | 越小越好 |
+| `throughput_ratio` | 吞吐量比（departures/arrivals） | 越接近 1 越接近稳定 |
+| `throughput_mbps` | 实际总吞吐量 | 越大越好 |
+| `total_arrivals` | 总到达包数 | paired MC 下同一 Λ、同一 seed 内各算法相同 |
+| `total_departures` | 总发送包数 | 越大通常越好 |
+| `arrival_total_rate_pps` | 全网平均到达包数/slot | 应接近输入的 Λ |
+| `departure_total_rate_pps` | 全网平均发送包数/slot | 反映实际服务能力 |
+| `hotspot_avg_queue_mbit` | 热点链路平均 backlog | 越小越能说明热点 QoS 得到照顾 |
+| `normal_avg_queue_mbit` | 普通链路平均 backlog | 用于观察是否过度牺牲普通链路 |
+| `*_std` | 多个 MC seed 下的标准差 | 越小说明结果越稳定 |
+| `*_ci95` | 均值的 95% 置信区间半宽 | 用于判断差异是否显著 |
+| `is_stable` | 最近窗口内队列增长斜率是否接近 0 | `None` 表示仿真太短无法判断 |
+
+`simulation_runs.json` 保存每个 MC seed 的明细，key 形如 `GAT_0.5_seed42`。为了避免文件过大，它不保存完整二维 `queue_trajectory`，只保留标量指标、一维轨迹和本轮使用的 hotspot arrival profile。
 
 ### 图片说明
 
@@ -384,6 +515,7 @@ results/
 | `csi_imperfection` | `plot_csi_imperfection()` | `all_experiments_summary.xlsx` Sheet3 | CSI 量化精度（2/4/6/8/10 bit）影响 |
 | `trajectory_lambda<λ>.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 队列长度/发送量/吞吐量随时隙变化轨迹 |
 | `queue_comparison_bar.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 各算法平均队列长度柱状对比 |
+| `queue_backlog_delay_vs_lambda.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 类似 MAB Fig.4/Fig.5，展示平均队列积压和平均时延随 λ 的变化 |
 
 > 生成图片命令：`uv run python utils/plot_paper.py --plot <type>`，`<type>` 可选 `all`、`baseline`、`training`、`samples`、`csi`。
 
@@ -395,7 +527,7 @@ results/
 
 ---
 
-### v0.3 — 队列感知模块（已放弃，但有记录价值）
+### v0.3 — 早期队列感知实验（历史记录，结论需重新评估）
 
 **时间：** 2026 年 5 月
 
@@ -406,7 +538,7 @@ results/
 - Loss 函数修改：`L = -Σ R_i` → `L = -Σ(Q_i × R_i)`，即 MWS（Maximum Weight Scheduling）加权效用
 - 理论依据：Lyapunov 优化框架下的队列稳定性分析
 
-**实验结果：**
+**早期实验结果：**
 
 | 指标 | GAT（队列感知） | GAT-base（非队列） |
 |------|---------------|-----------------|
@@ -414,9 +546,9 @@ results/
 | 吞吐量比 | 更差 | 更好 |
 | 稳定性 | 更差 | 更好 |
 
-**失败原因（核心发现）：**
+**当时的失败原因判断：**
 
-经过深入分析，发现 MWS 加权 loss 在本场景下**理论上不成立**：
+早期分析曾认为 MWS 加权 loss 在本场景下可能不适用，主要理由包括：
 
 1. **证明前提失效**：Lyapunov 稳定性证明中要求 `π² = π`（二元调度）以及服务率恒定。但我们的场景中：
    - 调度值是连续概率 `π ∈ [0,1]`（而非二元 0/1）
@@ -427,11 +559,11 @@ results/
 
 3. **训练-仿真分布不匹配**：训练时使用 `uniform(0, 500)` 的队列快照，仿真时使用 Poisson 累积队列
 
-**结论：** 将 Q 显式加入 loss 函数对于本场景无意义。队列信息需要通过其他方式（如时间记忆模型）隐式传递，而非直接作为优化目标。
+**后续修正：** 结合后续代码检查和 MAB/Lyapunov 论文讨论，早期结论不能直接作为最终判断。连续 Shannon rate 并不必然使 Lyapunov/MWS 思路失效；早期 GAT-q 表现差可能混有实现 bug、队列特征同步问题、link-level/UAV-level 队列语义错位、单次随机到达波动、以及负载设置过载等因素。因此当前更合理的做法是：先在修正后的 link-level 队列、动态队列同步、paired Monte Carlo 公平比较口径下重新评估 GAT-q，再决定是否转向 “GAT 学空间速率结构 + 队列感知 MWS/排序调度” 的 model-based 方案。
 
 **相关脚本：** `experiments/run_queue_experiment.py`
 
-**遗留影响：** 代码中仍保留 `use_queue` 参数和 `raw_node_dim=2` 的支持，但默认关闭。如果未来需要与时间记忆模型结合，应考虑让队列历史通过 GRU/LSTM 隐式传递，而非显式加在 loss 中。
+**当前状态：** 代码中保留 `use_queue` 参数和 `raw_node_dim=2` 的支持。该路线尚未最终放弃，后续应以 Monte Carlo 汇总后的 `long_term_avg_queue`、`final_avg_queue`、`throughput_ratio` 及置信区间作为判断依据。
 
 ---
 
