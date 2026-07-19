@@ -37,7 +37,7 @@
 
 
 # ========== Network / scenario parameters ==========
-NUM_UAV: 40
+NUM_UAV: 20
 AREA_WIDTH: 1000
 HEIGHT_RANGE: [50, 150]
 MIN_DISTANCE: 20
@@ -51,6 +51,12 @@ CARRIER_FREQ: !!float 2.4e9
 NOISE_PSD: -169
 SNR_GAP_DB: 0
 SNR_THRES: 5
+
+# ========== Air-to-air small-scale channel ==========
+# TNSE official baseline: normalized LoS-dominant Rician fading.
+# Rayleigh remains available only as a legacy/sensitivity condition.
+CHANNEL_MODEL: "rician"
+RICIAN_K_DB: 5.0
 
 # ========== CSI mode ==========
 # CSI_MODE 统一控制：模型输入特征 + 速率计算
@@ -113,8 +119,10 @@ GRAD_CLIP_CONFIG:
 TRAIN_SIZE: 500
 VAL_SIZE: 128
 TEST_SIZE: 128
-# 【重要】数据集按 NUM_UAV 分离缓存，修改 NUM_UAV 后会自动生成新数据集
-DATASET_CACHE_PATH: './datasets/dataset_numUAV=40.pkl'
+# 【重要】物理配置属于数据语义。当前正式口径固定为 10 dBm / perfect CSI；
+# 旧的仅含 numUAV 的缓存可能来自 22 dBm，不得静默复用。
+DATASET_CACHE_PATH: './datasets/formal/channel_gat_power_transfer/N20/rician/train_tx=10dBm_seed=10086_n=500-128.pkl'
+TEST_DATASET_CACHE_PATH: './datasets/formal/channel_gat_power_transfer/N20/rician/test_tx=10dBm_seed=10088_n=128.pkl'
 GEN_BATCH_SIZE: 50
 
 # ========== Evaluation ==========

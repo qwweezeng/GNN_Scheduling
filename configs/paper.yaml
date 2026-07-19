@@ -1,0 +1,67 @@
+# Canonical physical and training configuration for the TNSE submission.
+# Experiment scripts may override NUM_UAV and runtime-only parameters, but
+# must not silently change the channel family, transmit power, or CSI meaning.
+
+NUM_UAV: 20
+AREA_WIDTH: 1000
+HEIGHT_RANGE: [50, 150]
+MIN_DISTANCE: 20
+TX_POWER: 10
+G_T: 0
+G_R: 0
+
+BANDWIDTH: !!float 5e6
+CARRIER_FREQ: !!float 2.4e9
+NOISE_PSD: -169
+SNR_GAP_DB: 0
+SNR_THRES: 5
+
+CHANNEL_MODEL: "rician"
+RICIAN_K_DB: 5.0
+CSI_MODE: "perfect"
+Q_BITS: 4
+
+NODE_RAW_DIM: 1
+MLP_HIDDEN_DIMS: [32, 32]
+NODE_EMBED_DIM: 32
+EDGE_DIM: 1
+NUM_HEADS: 4
+GAT_OUT_DIM: 48
+NUM_GAT_LAYERS: 4
+SCHEDULE_HIDDEN: 32
+DROPOUT: 0.0
+ACTIVATION: "relu"
+
+LR: 0.0001
+EPOCHS: 30
+BATCH_SIZE: 1
+TRAIN_SIZE: 500
+VAL_SIZE: 128
+TEST_SIZE: 128
+GEN_BATCH_SIZE: 50
+EVAL_INTERVAL: 1
+
+LR_SCHEDULER_TYPE: "ReduceLROnPlateau"
+LR_SCHEDULER_CONFIG:
+  mode: "max"
+  factor: 0.5
+  patience: 10
+  min_lr: 0.00001
+GRAD_CLIP_CONFIG:
+  explosion_threshold: 100
+  explosion_clip: 10.0
+  normal_clip: 5.0
+
+USE_QUEUE: false
+USE_POWER_CONTROL: false
+SLOT_DURATION: 0.001
+PACKET_SIZE: 12000
+MARGINAL_MP_ROUNDS: 4
+
+RESULTS_DIR: "./results"
+LOG_DIR: "./logs"
+SAVE_MODEL: true
+SEED: 10086
+DEVICE: "auto"
+GPU_ID: 0
+

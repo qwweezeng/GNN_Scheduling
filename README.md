@@ -1,722 +1,170 @@
-# GNN-Scheduling — 基于图神经网络的无人机密集集群链路调度
+# GNN Scheduling for Dense UAV Networks
 
-本项目是论文《GNN-based Dynamic Link Scheduling for Dense UAV Swarm Networks》的 PyTorch 仿真实现。
+本仓库是TNSE期刊投稿的可复现代码。当前研究已经收束：不再加入新的模型路线，只保留
+会议版满缓存Channel-GAT、期刊版队列调度GAT-Assisted MarginalMP、去GAT的
+Direct-Link必要消融，以及一个默认关闭的CG-CSI支线。
 
-**研究背景：** 在大规模无人机密集集群自组网（FANET）中，大量链路并发争用无线信道资源，带来严重碰撞和干扰，使得网络资源难以高效利用。本项目提出基于图注意力网络（GAT）的分布式链路调度方案，目标是：**在每个时隙决策激活哪些链路，使全网效用（总吞吐量）最大化。**
+## 1. 从哪里开始阅读
 
-**核心思路：** 将无人机网络中的通信链路建模为**冲突图（Conflict Graph）**：
+1. [`docs/SYSTEM_MODEL.md`](docs/SYSTEM_MODEL.md)：系统模型、两类调度任务、算法公式、
+   baseline边界和消息开销口径；
+2. [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)：三段仿真逻辑、七幅投稿主图、baseline
+   改造表和正式运行前的接口闸门；
+3. [`configs/paper.yaml`](configs/paper.yaml)：投稿默认物理参数和训练参数；
+4. [`README-base.md`](README-base.md)：原会议代码的历史运行说明，仅用于追溯。
 
-- **节点** = 通信链路
-- **边** = 链路间的干扰关系
+## 2. 论文与代码的对应关系
 
-通过 GAT 迭代地从局部节点特征（邻居干扰信息）学习整体网络态势，输出每条链路的激活概率。
+### 第三章：满缓存Channel-GAT
 
----
+每条候选链路一直有数据。GAT读取直达SNR和干扰图，输出调度概率$\pi_i$，目标是最大化
+网络总Shannon速率。
 
-## 安装与运行
+- `models/model.py`：Channel-GAT与统一Shannon速率；
+- `train/train_channel_gat_rician.py`：正式Rician训练、测试和坍缩检查；
+- `experiments/compare_gat_vs_spatial_dl.py`：满缓存baseline；
+- `experiments/convergence_analysis.py`：收敛与训练样本量；
+- `experiments/scaling_experiment.py`：跨UAV规模泛化；
+- `experiments/csi_imperfection_study.py`：满缓存CSI输入敏感性。
 
-### 环境准备
+### 第四章：GAT-assisted队列感知MarginalMP
 
-```bash
-# 安装 uv（推荐，自动管理虚拟环境）
-curl -LsSf https://astral.sh/uv/install.sh | sh
+每条链路有独立队列。主方案复用第3章GAT的连续调度倾向$\pi$，把它转换为考虑邻居
+期望干扰的信道分数$C_i^{GAT}$，再用$Q_iC_i^{GAT}$产生局部胜者骨架；随后进行固定
+$K=4$轮加入/退出边际效用消息传递。`Direct-Link MarginalMP`使用$Q_iC_i^{solo}$形成
+骨架，其余后端完全相同，是必须报告的去GAT消融。
 
-# 安装依赖（自动创建 .venv）
-uv pip install -r pyproject.toml
+- `models/initial_schedule_construction.py`：LocalMax骨架和Join消融；
+- `models/marginal_mp.py`：主算法及精确加入/退出边际；
+- `models/local_physical_reuse.py`：共享物理计算和GAT-assisted消融；
+- `simulator/queue_simulator.py`：固定CSI动态队列；
+- `simulator/mobile_block_fading.py`：永久link identity、移动Rician block-fading、真实/
+  观测CSI分离；
+- `experiments/compare_marginal_mp_vs_lgs.py`：相同$(Q,H)$快照机制对比；
+- `experiments/exp_fixed_csi_qos.py`：固定CSI goodput/backlog/delay；
+- `experiments/evaluate_mobile_block_fading_csi.py`：latest/stale/large-scale/4-bit CSI。
 
-# 或直接用 pip
-pip install torch numpy matplotlib networkx tensorboard pyyaml pandas openpyxl
-```
+### 可选CG-CSI支线
 
-如果使用本机已有的 `conda/pytorch` 环境，可以把 README 中的：
+`models/complex_geometry_csi.py`根据aged复CSI和几何预测当前功率矩阵，然后仍调用同一个
+MarginalMP。默认实验不启用它；只有命令行添加`--include-cg-csi`才运行。它不是论文主
+贡献，也不包含GAT或GRU。
 
-```bash
-uv run python <script.py> ...
-```
-
-等价替换为：
-
-```bash
-conda run --no-capture-output -n pytorch python -u <script.py> ...
-```
-
-其中 `--no-capture-output` 和 `python -u` 用于实时显示输出，适合长时间训练或多时隙仿真。
-
----
-
-## 参数联动速查表（重要！）
-
-本项目有多个**可选功能模块**，每个模块涉及一组必须联动设置的参数。若参数不一致，代码会在运行时报错（防呆设计）。
-
-### 1. 队列感知模块（Queue-aware）
-
-| 功能 | 参数 | 值 | 说明 |
-|------|------|----|------|
-| 启用开关 | `run_queue_experiment.py` | 固定 | 队列感知实验脚本，无开关 |
-| 特征维度 | `raw_node_dim` | `2` | GAT 输入 `[SNR, Q]` |
-| Loss | — | `-Σ(Q_i × R_i)` | MWS 加权效用 |
-
-**运行命令：**
-
-```bash
-# 队列感知实验（快速单 seed 验证）
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --arrival_rates 0.5 --num_slots 1000 --seed 42
-
-# 队列感知实验（推荐正式比较：paired Monte Carlo）
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --arrival_rates 0.5,1.0,2.0,4.0 --num_slots 5000 --seed 42 --mc_runs 5
-
-# 自定义数据集规模和训练轮数；若模型已存在，会优先加载而不是重新训练
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --train_size 500 --val_size 64 --test_size 64 --epochs 30 --seed 42
-```
-
-**数据集目录：**
-- 非队列数据：`datasets/dataset_numUAV=<N>.pkl`（与 `bin/run_experiment.py` 共用）
-- 队列数据：`datasets/queue/dataset_numUAV=<N>_linklevel.pkl`（队列实验专用，link-level 队列）
-
-**标准模型库：**
-- 非队列模型：`results/models/gat_numUAV=<N>.pth`（Loss = -Σ R_i）
-- 队列模型：`results/models/gat_queue_numUAV=<N>.pth`（Loss = -Σ Q_i×R_i）
-- 命名直接以 `num_uav` 定位，方便任何时候直接调取
-
-### 2. 功率控制模块（Power Control）
-
-| 功能 | 参数 | 值 | 说明 |
-|------|------|----|------|
-| 启用开关 | `USE_POWER_CONTROL` | `true` | 在实验脚本中设置 |
-| 惩罚系数 | `LAMBDA_POWER_PENALTY` | `0.01` | 鼓励降低功率 |
-
-**运行命令：**
-
-```bash
-# 功率控制实验
-uv run python experiments/power_control_experiment.py --mode compare --num-uav 50
-```
-
-### 3. CSI 量化模块
-
-| 功能 | 参数 | 值 | 说明 |
-|------|------|----|------|
-| CSI 模式 | `CSI_MODE` | `"quantized"` | 可选 `perfect`/`large_scale`/`quantized` |
-| 量化精度 | `Q_BITS` | `4` | 比特数越小精度越低 |
-
-**运行命令：**
-
-```bash
-uv run python bin/run_experiment.py --csi-mode quantized --q-bits 4 --seed 42
-```
-
----
-
-## 实验一览
-
-> **⚠️ 重要提示：每个实验都有对应的专用脚本，请勿混用。**
-> - 基础吞吐量实验 → `bin/run_experiment.py`
-> - 队列感知实验 → `experiments/run_queue_experiment.py`
-> - 功率控制实验 → `experiments/power_control_experiment.py`
-> - 跨尺度扩展性 → `experiments/scaling_experiment.py`
-
-| 实验 | 命令 | 主要用途 |
-|------|------|----------|
-| 基础吞吐量 | `bin/run_experiment.py` | 训练 GAT，输出 test utility |
-| 队列感知仿真 | `run_queue_experiment.py` | 队列稳定性分析 |
-| 功率控制对比 | `power_control_experiment.py` | 调度-功率联合优化 |
-| 跨尺度扩展性 | `scaling_experiment.py --mode all` | 模型泛化能力 |
-| CSI 不完美性 | `csi_imperfection_study.py` | 信道量化精度影响 |
-| 收敛性分析 | `convergence_analysis.py` | 训练样本量分析 |
-| 画图 | `utils.plot_paper` | 生成论文图表 |
-| TensorBoard | `tensorboard --logdir=./logs/` | 可视化训练曲线 |
-
-### 1. 基础吞吐量实验（推荐入口）
-
-```bash
-# 快速验证（不保存，10 条样本）
-uv run python bin/run_experiment.py --config configs/exp_example.yaml --seed 42 --dry-run
-
-# 正式训练
-uv run python bin/run_experiment.py --config configs/exp_example.yaml --seed 42
-
-# 量化 CSI 实验
-uv run python bin/run_experiment.py --config configs/exp_example.yaml \
-    --csi-mode quantized --q-bits 4 --seed 42
-```
-
-**输出：** `results/models/` 训练模型，`results/all_experiments_summary.xlsx` 汇总数据。
-
-### 2. 队列感知实验
-
-```bash
-# 队列感知实验（训练/加载模型 + 多时隙仿真）
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --arrival_rates 0.5 --num_slots 5000 --seed 42
-
-# 自定义数据集规模
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --train_size 500 --val_size 64 --test_size 64 --seed 42
-
-# 测试不同全网总到达率；每个 Λ 都会独立生成共享的 channel/arrival trace
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --arrival_rates 0.5,1.0,2.0,4.0 --num_slots 5000 --seed 42 --mc_runs 5
-
-# 显式指定 Monte Carlo seeds；会覆盖 --mc_runs
-uv run python experiments/run_queue_experiment.py --num_uav 30 \
-    --arrival_rates 0.5 --num_slots 5000 --mc_seeds 42,43,44,45,46
-```
-
-> **注意**：`run_queue_experiment.py` 固定使用队列感知模式（MWS 加权 loss），
-> 数据集存储在 `datasets/queue/` 目录，与基础实验的 `datasets/` 分离。
-> 正式比较 GAT 与 GAT-base 时，推荐使用 `--mc_runs` 或 `--mc_seeds`，避免单次随机到达过程造成误判。
-
-**命令行参数说明：**
-
-| 参数 | 默认值 | 含义 | 什么时候改 |
-|------|--------|------|------------|
-| `--num_uav` | `30` | UAV 数量；链路数会随拓扑随机生成而变化 | 做不同网络规模实验时修改 |
-| `--arrival_rates` | `0.5,1.0,1.5,2.0` | 全网总泊松到达率 Λ，单位 packets/slot；脚本会按 link-level hotspot 模型分配到各链路，并满足 `sum_i λ_i = Λ` | 做负载扫描时修改 |
-| `--num_slots` | `5000` | 每个 Λ、每个 MC seed 的仿真时隙数 | 快速测试可设小，正式实验建议 5000 或更大 |
-| `--seed` | `42` | 训练/数据加载的主 seed；未指定 `--mc_seeds` 时，也作为 MC seed 起点 | 复现实验时固定 |
-| `--mc_runs` | `1` | Monte Carlo 次数；脚本会使用 `seed, seed+1, ...` | 正式比较建议 5-20 |
-| `--mc_seeds` | 空 | 显式指定 Monte Carlo seeds，例如 `42,43,44`；优先级高于 `--mc_runs` | 需要严格复现实验批次时使用 |
-| `--slots_per_block` | `0` | 信道块长度；`0` 表示整个仿真周期信道固定，正整数表示每 N 个 slot 更新一次信道 | 做快变信道实验时修改 |
-| `--train_size` | `500` | 训练快照数量 | 重新训练模型或做样本量实验时修改 |
-| `--val_size` | `64` | 验证快照数量 | 通常不用改 |
-| `--test_size` | `64` | 测试快照数量 | 通常不用改 |
-| `--epochs` | `30` | 训练轮数；若模型文件已存在，则优先加载模型，不会训练 | 重新训练时修改 |
-| `--lr` | `1e-4` | 学习率 | 训练不收敛时再调 |
-| `--queue_range` | `0,200` | 训练快照中的随机队列范围；用于覆盖仿真中可能出现的队列状态 | 队列明显超过训练范围时调大 |
-
-**Monte Carlo 公平比较逻辑：**
+## 3. 目录结构
 
 ```text
-for each λ:
-  for each mc_seed:
-    生成一套共享 channel trace
-    生成一套共享 arrival trace
-    GAT / GAT-base / Random / Greedy 都跑同一套随机过程
-  对多个 seed 的结果取 mean / std / 95% CI
-```
-
-这样做的目的不是固定死某一组到达包数，而是做 paired comparison：同一轮中算法面对完全相同的业务到达，不同轮之间再重新采样，最终用 Monte Carlo 平均降低随机波动。
-
-**实验对比的调度算法：**
-
-| 算法 | 特征输入 | 调度依据 | 说明 |
-|------|----------|----------|------|
-| `GAT` | `[SNR, Q]` (dim=2) | `Q_i × R_i` | 队列感知 GAT（核心方法） |
-| `GAT-base` | `[SNR]` (dim=1) | 纯 `R_i` | 非队列 GAT baseline |
-| `Random` | — | 均匀概率 | 随机调度 |
-| `Greedy` | `[SNR]` | SNR 排序 | 贪心选 SNR 最高链路 |
-
-> 通过 GAT vs GAT-base 对比可验证"队列感知特征"是否有额外价值。
-
-**核心公式：**
-
-```
-D_i(t) = π_i(t) × R_i(t) × B × τ / L   (发送量，packets/slot)
-Q_i(t+1) = max(0, Q_i(t) - D_i(t)) + A_i(t)   (Lindley 方程)
-```
-
-### 3. 功率控制实验
-
-```bash
-# 对比实验（有 vs 无功率控制）
-uv run python experiments/power_control_experiment.py --num-uav 50 --train-size 300
-
-# 仅运行功率控制模式
-uv run python experiments/power_control_experiment.py --mode power-control-only --power-penalty 0.05
-
-# 网格搜索最优 λ
-uv run python experiments/power_control_experiment.py --mode grid-search \
-    --power-penalty-search 0.001 0.01 0.05 0.1 0.5
-```
-
-### 4. 跨尺度扩展性实验
-
-```bash
-# 配对泛化（训练 X → 测试 Y）
-uv run python -m experiments.scaling_experiment --mode paired --use-existing-models
-
-# 混合训练
-uv run python -m experiments.scaling_experiment --mode mixed
-
-# 全部实验 + 快速模式
-uv run python -m experiments.scaling_experiment --mode all --quick
-```
-
-### 5. CSI 不完美性实验
-
-```bash
-# 默认跑所有模式
-uv run python experiments/csi_imperfection_study.py --gpu-id 0
-
-# 跑 numUAV=50，测试 2/4/6/8 bit 量化
-uv run python experiments/csi_imperfection_study.py --num-uav 50 --quantized-bits 2 4 6 8
-```
-
-### 6. 收敛性分析
-
-```bash
-uv run python -m experiments.convergence_analysis --gpu-id 0
-```
-
----
-
-## 队列感知仿真详解
-
-### 物理场景
-
-每个时隙的流程：
-
-```
-┌──────────────────────────────────────────────────────┐
-│  时隙 t                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐           │
-│  │ 业务到达  │  │  MAC调度  │  │  物理传输  │           │
-│  │ A_i~Poi(λ)│→ │ π_i(t)=0/1│→ │ R_i(SNR)  │           │
-│  │(包/时隙) │  │ (链路激活) │  │ (bps/Hz)  │           │
-│  └──────────┘  └──────────┘  └──────────┘           │
-│       ↓              ↓              ↓                 │
-│  队列更新:        发送决策:       发送包数:          │
-│  Q_i += A_i       π_i ∈ {0,1}    D_i = π_i ×      │
-│                                    R_i×B×τ/L          │
-└──────────────────────────────────────────────────────┘
-```
-
-### 关键参数说明
-
-| 参数 | 来源 | 说明 | 单位 |
-|------|------|------|------|
-| `arrival_lambda` | `--arrival_rates` | 全网总泊松到达均值 Λ；脚本内部再生成每条链路的 `λ_i` | packets/slot |
-| `num_slots` | `--num_slots` | 每个到达率、每个 MC seed 的仿真时隙数 | slots |
-| `slot_duration` | config / 默认值 | 时隙长度 τ | 秒 |
-| `packet_size` | config / 默认值 | 包大小 L | bits |
-| `bandwidth` | config / `NetworkState` | 带宽 B，用于把 `R_i` 换算成 packets/slot | Hz |
-| `slots_per_block` | `--slots_per_block` | 信道块长度；`0` 为全程固定信道，正整数为每 N 个 slot 更新一次 | slots |
-| `mc_runs` | `--mc_runs` | Monte Carlo 次数；用于降低随机到达过程的偶然性 | runs |
-| `mc_seeds` | `--mc_seeds` | 显式 MC seed 列表；优先级高于 `mc_runs` | — |
-
-**内部接口说明：**
-
-| 参数 | 所在位置 | 是否命令行参数 | 作用 |
-|------|----------|----------------|------|
-| `channel_realizations` | `QueueSimulator.run()` | 否 | 预生成信道块；同一 MC seed 内所有调度算法共享 |
-| `arrival_realizations` | `QueueSimulator.run()` | 否 | 预生成到达矩阵，shape 为 `[num_slots, num_links]`；同一 MC seed 内所有调度算法共享 |
-| `include_queue_feature` | `QueueSimulator(...)` | 否 | 控制模型输入是否包含队列特征；GAT 使用 `[SNR, Q]`，GAT-base 只使用 `[SNR]` |
-
-`arrival_realizations` 不需要手动设置。正常运行 `run_queue_experiment.py` 时，脚本会根据 `--arrival_rates` 和 `--mc_seeds` 自动生成它。
-
-**到达率怎么选：**
-
-`--arrival_rates` 中的 Λ 是全网总到达率，不再是 per-link 到达率。当前默认使用 link-level hotspot 业务模型：随机选择约 20% 链路作为热点链路，让它们承担 70% 总业务；其余约 80% 链路承担 30% 背景业务。每条链路的到达率满足：
-
-```text
-sum_i lambda_i = Lambda
-
-i in hotspot:
-    lambda_i = 0.7 * Lambda / num_hotspot_links
-
-i not in hotspot:
-    lambda_i = 0.3 * Lambda / num_normal_links
-```
-
-例如当前拓扑有 `num_links=80`，且 `Λ=4 packets/slot`，则全网平均每 slot 到达约 4 个包，不会再变成 `4 × 80` 个包。热点链路的 per-link 到达率约为普通链路的 9 倍，因此更容易形成重点中继/热点区域的队列压力。建议先用 `0.5,1.0,2.0,4.0,8.0` 做短仿真扫描，再选择低负载、中等负载、过载三组点做正式 MC 实验。
-
-### 性能指标
-
-| 指标 | 说明 | 单位 |
-|------|------|-------|
-| `final_avg_queue` / `avg_queue` | 仿真结束时的平均队列长度；`avg_queue` 是历史兼容别名 | packets |
-| `final_max_queue` / `max_queue` | 仿真结束时的最大队列长度；`max_queue` 是历史兼容别名 | packets |
-| `long_term_avg_queue` | 长期平均队列长度 | packets |
-| `average_queue_backlog` | 平均队列积压，等价于 `long_term_avg_queue` 的论文指标命名 | packets/link |
-| `average_queue_backlog_mbit` | 平均队列积压换算成 Mbit | Mbit/link |
-| `average_delay_slots` | Little's law 估计的平均排队时延 | slots |
-| `average_delay_ms` | Little's law 估计的平均排队时延 | ms |
-| `throughput_ratio` | 吞吐量比（departures/arrivals） | 无量纲，≈1 表示稳定 |
-| `throughput_mbps` | 实际网络总吞吐量 | Mbps |
-| `departure_rate_pps` | 每链路平均发送速率 | packets/slot |
-| `arrival_total_rate_pps` | 全网每时隙平均到达包数 | packets/slot |
-| `departure_total_rate_pps` | 全网每时隙平均发送包数 | packets/slot |
-| `hotspot_avg_queue_mbit` | 热点链路平均队列积压 | Mbit/link |
-| `normal_avg_queue_mbit` | 普通链路平均队列积压 | Mbit/link |
-| `queue_overflow_prob` | 溢出概率（Q > 50 的比例） | — |
-| `is_stable` | 最近窗口内队列增长斜率是否接近 0 | True/False/None |
-
-**读结果时优先看：**
-
-1. `average_queue_backlog_mbit`：平均队列积压，对应 MAB 论文 Fig.4 类似指标。
-2. `average_delay_ms`：平均时延估计，对应 MAB 论文 Fig.5 类似指标。
-3. `long_term_avg_queue`：长期平均队列，更适合评价整体队列稳定性。
-4. `final_avg_queue`：最后时刻队列，对尾部随机波动更敏感。
-5. `throughput_ratio`：实际发送包数 / 到达包数；在过载场景下通常远小于 1。
-6. `*_ci95`：Monte Carlo 95% 置信区间半宽。若两个算法均值差小于 CI，不能轻易说谁显著更好。
-
-当前 `average_delay_ms` 是 Little's law 估计：
-
-```text
-average_delay_slots = average_queue_backlog / departure_rate_pps
-average_delay_ms    = average_delay_slots × slot_duration × 1000
-```
-
-这个口径不需要逐包 FIFO 记录，适合当前队列仿真快速对比。若后续需要严格统计 “successfully delivered packets” 的真实等待时间，需要额外维护每条链路的 packet age 队列。
-如果某个方法在某个 MC seed 中没有成功发送任何包，则该轮 delay 无定义，结果中会记为 `None`；汇总表会显示 `N/A` 或仅对有效 delay 样本求平均。
-
-> **关键对比**：GAT vs GAT-base 决定了队列感知特征 `[SNR, Q]` 是否有额外价值。
-
----
-
-## 项目结构
-
-```
 GNN_Scheduling/
-├── bin/
-│   └── run_experiment.py        # CLI 统一入口（基础吞吐量实验）
-│
-├── configs/
-│   └── exp_example.yaml         # 基础配置（所有复杂功能默认关闭）
-│
-├── models/
-│   └── model.py                 # GATScheduler、calculate_achievable_rate
-│
-├── experiments/
-│   ├── runner.py                # ExperimentRunner：实验编排器
-│   ├── run_queue_experiment.py  # 队列感知调度实验
-│   ├── csi_imperfection_study.py # CSI 不完美性实验
-│   ├── scaling_experiment.py    # 跨尺度扩展性实验
-│   ├── convergence_analysis.py  # 收敛性分析
-│   ├── power_control_experiment.py # 功率控制实验
-│   └── compare_gat_vs_spatial_dl.py # GAT vs Spatial DL 对比
-│
-├── simulator/
-│   ├── __init__.py            # 模块说明文档
-│   ├── base.py                # BaseSimulator、SimpleSimulator
-│   └── queue_simulator.py     # QueueSimulator：队列感知仿真器
-│
-├── train/
-│   └── trainer.py              # 训练循环、梯度裁剪、早停
-│
-├── utils/
-│   ├── baseline.py             # 基线算法（Random/Greedy/FPLinQ/Spatial DL）
-│   ├── network_generate.py     # 数据生成器、NetworkState
-│   ├── plot_paper.py          # 论文图表绘制
-│   ├── plot_config.py          # 配色方案
-│   └── io.py                  # 文件 I/O、Excel 读写
-│
-├── results/                    # 实验结果（详见「结果文件详解」章节）
-│
-└── logs/
-    └── tensorboard/            # TensorBoard 训练日志
+├── baseline/      第三方baseline原代码与本项目统一适配器
+├── bin/           会议版兼容入口
+├── configs/       投稿唯一默认配置paper.yaml和历史兼容配置
+├── datasets/      原会议数据；正式Rician数据位于datasets/paper/
+├── docs/          当前系统模型、实验说明、论文与历史归档
+├── experiments/   投稿图对应的评测入口
+├── models/        Channel-GAT、MarginalMP、必要消融、可选CG-CSI
+├── scripts/       数据准备和artifact审计工具
+├── simulator/     静态/移动信道与队列仿真
+├── tests/         物理公式、接口和artifact一致性测试
+├── train/         Channel-GAT及End-to-End GAT-Q消融训练
+├── utils/         数据、指标、baseline和作图公共函数
+└── archives/      已停止的研究探测源码及云端历史快照
 ```
 
----
+## 4. 统一调度器接口
 
-## 结果文件详解
+队列方法实现：
 
-### 目录结构
-
-```
-results/
-├── models/                                   # 标准模型库（共用）
-│   ├── gat_numUAV=<N>.pth                   # 非队列模型（raw_node_dim=1）
-│   ├── gat_queue_numUAV=<N>.pth             # 队列感知模型（raw_node_dim=2）
-│   ├── scaling_numUAV<N>.pth                # 跨尺度实验模型（配对泛化）
-│   └── mixed_numUAV20_30_40_50.pth          # 混合尺度训练模型
-│
-├── exp_<numUAV>_<timestamp>/                # 基础吞吐量实验输出（bin/run_experiment.py）
-│   ├── exp_<numUAV>_<timestamp>_per_epoch.json  # 每 epoch 训练日志
-│   ├── exp_<numUAV>_<timestamp>_model.pth       # 训练模型快照
-│   └── exp_<numUAV>_<timestamp>_baselines.json  # 基线算法对比结果
-│
-├── queue_exp<timestamp>_s<seed>_mc<K>/      # 队列感知实验输出（run_queue_experiment.py）
-│   ├── simulation_results.json              # Monte Carlo 汇总结果 JSON
-│   ├── simulation_runs.json                 # 每个 MC seed 的紧凑明细
-│   ├── trajectory_lambda<λ>.png             # 队列长度/发送量/吞吐量轨迹图
-│   ├── queue_backlog_delay_vs_lambda.png    # 平均队列积压/平均时延随 λ 变化图
-│   └── queue_comparison_bar.png             # 各算法最终平均队列长度柱状图
-│
-├── img/                                      # 论文图表（utils/plot_paper.py 生成）
-│   ├── baseline_comparison.{eps,png}        # 各算法吞吐量对比
-│   ├── training_curves_val_utility.{eps,png}# 验证集效用训练曲线
-│   ├── training_curves_train_loss.{eps,png} # 训练 Loss 曲线
-│   ├── performance_vs_samples.{eps,png}     # 性能随训练样本量变化
-│   └── csi_imperfection.{eps,png}           # CSI 量化精度影响
-│
-└── all_experiments_summary.xlsx             # 所有实验汇总表
+```python
+scheduler.eval()
+action = scheduler.schedule_with_state(state, queues)
 ```
 
-### 模型文件说明
+其中`state`携带候选link identity、观测功率矩阵、冲突邻接和噪声；`queues`与link identity
+一一对应；返回值是形状`[num_links, 1]`的二元动作。服务速率由仿真器使用真实信道统一
+结算，调度器不能自行改写真实信道。
 
-| 文件名 | 训练脚本 | 节点特征 | Loss 函数 | 用途 |
-|--------|----------|----------|-----------|------|
-| `gat_numUAV=10.pth` | `bin/run_experiment.py` | `[SNR]` (dim=1) | `-Σ R_i`（纯吞吐量） | 基础 GAT 调度 |
-| `gat_queue_numUAV=10.pth` | `run_queue_experiment.py` | `[SNR, Q]` (dim=2) | `-Σ(Q_i × R_i)`（MWS 加权） | 队列感知调度 |
-| `scaling_numUAV20/30/40/50.pth` | `scaling_experiment.py` | `[SNR]` (dim=1) | `-Σ R_i` | 配对泛化实验 |
-| `mixed_numUAV20_30_40_50.pth` | `scaling_experiment.py` | `[SNR]` (dim=1) | `-Σ R_i` | 混合尺度训练 |
+## 5. 最短复现流程
 
-> 注意：`scaling_*.pth` 命名不带 `=`，`gat_*_numUAV=*.pth` 带 `=`。
-
-> **注意**：`gat_numUAV=<N>.pth` 使用非队列数据集（`datasets/`），`gat_queue_numUAV=<N>.pth` 使用 link-level 队列数据集（`datasets/queue/*_linklevel.pkl`），可通过 `run_queue_experiment.py` 中的 GAT vs GAT-base 对比来验证队列感知特征的价值。
-
-### 实验目录命名规则
-
-**基础实验** `exp_<numUAV>_<YYYYMMDD>_<HHMM>`：
-- `exp_20_20260130_2147`：numUAV=20，2026年1月30日 21:47 运行
-
-**队列实验** `queue_exp<YYYYMMDD>_<HHMM>_s<seed>_mc<K>`：
-- `queue_exp20260707_2323_s42_mc2`：队列实验，2026年7月7日 23:23，训练 seed=42，Monte Carlo 共 2 轮
-- `s<seed>` 表示训练/数据加载主 seed；未显式指定 `--mc_seeds` 时，MC seeds 默认为 `seed, seed+1, ...`
-- `mc<K>` 表示 Monte Carlo 轮数；正式比较时建议 `K>=5`
-
-### Queue 实验结果解读（simulation_results.json）
-
-`simulation_results.json` 保存 Monte Carlo 汇总结果。每个实验对比 4 种调度算法，字段含义如下：
-
-| 算法 | 说明 | 特征输入 | 调度依据 |
-|------|------|----------|----------|
-| `GAT` | 队列感知 GAT | `[SNR, Q]` | `Q_i × R_i` 加权 |
-| `GAT-base` | 非队列 GAT | `[SNR]` | 纯 `R_i` 最大化 |
-| `Random` | 随机调度 | — | 均匀概率激活 |
-| `Greedy` | 贪心调度 | `[SNR]` | 选 SNR 最高的链路 |
-
-结果按全网总到达率 Λ 分组，格式为 `<algo>_<Λ>`（如 `GAT_0.5`）。每个 key 下包含标量均值、标准差、95% CI 和平均轨迹。关键指标：
-
-| 指标 | 说明 | 稳定判断 |
-|------|------|----------|
-| `num_mc_runs` | Monte Carlo 轮数 | 越大越稳，但运行越慢 |
-| `mc_seeds` | 实际使用的 MC seeds | 用于复现 |
-| `final_avg_queue` | 仿真结束时平均队列长度 | 越小越好，但对尾部随机波动敏感 |
-| `long_term_avg_queue` | 全时隙、全链路平均队列长度 | 更适合评价长期队列性能 |
-| `average_queue_backlog_mbit` | 平均队列积压，Mbit/link | 越小越好 |
-| `average_delay_ms` | Little's law 估计平均时延 | 越小越好 |
-| `throughput_ratio` | 吞吐量比（departures/arrivals） | 越接近 1 越接近稳定 |
-| `throughput_mbps` | 实际总吞吐量 | 越大越好 |
-| `total_arrivals` | 总到达包数 | paired MC 下同一 Λ、同一 seed 内各算法相同 |
-| `total_departures` | 总发送包数 | 越大通常越好 |
-| `arrival_total_rate_pps` | 全网平均到达包数/slot | 应接近输入的 Λ |
-| `departure_total_rate_pps` | 全网平均发送包数/slot | 反映实际服务能力 |
-| `hotspot_avg_queue_mbit` | 热点链路平均 backlog | 越小越能说明热点 QoS 得到照顾 |
-| `normal_avg_queue_mbit` | 普通链路平均 backlog | 用于观察是否过度牺牲普通链路 |
-| `*_std` | 多个 MC seed 下的标准差 | 越小说明结果越稳定 |
-| `*_ci95` | 均值的 95% 置信区间半宽 | 用于判断差异是否显著 |
-| `is_stable` | 最近窗口内队列增长斜率是否接近 0 | `None` 表示仿真太短无法判断 |
-
-`simulation_runs.json` 保存每个 MC seed 的明细，key 形如 `GAT_0.5_seed42`。为了避免文件过大，它不保存完整二维 `queue_trajectory`，只保留标量指标、一维轨迹和本轮使用的 hotspot arrival profile。
-
-### 图片说明
-
-| 图片文件 | 生成函数 | 数据来源 | 说明 |
-|----------|----------|----------|------|
-| `baseline_comparison` | `plot_baseline_comparison()` | `all_experiments_summary.xlsx` Sheet1 | GAT vs 基线算法吞吐量柱状图 |
-| `training_curves_val_utility` | `plot_training_curves(metric='val_utility')` | 各 `exp_*/_per_epoch.json` | 验证集效用随 epoch 变化 |
-| `training_curves_train_loss` | `plot_training_curves(metric='train_loss')` | 各 `exp_*/_per_epoch.json` | 训练 Loss 随 epoch 变化 |
-| `performance_vs_samples` | `plot_performance_vs_samples()` | `all_experiments_summary.xlsx` Sheet2 | 性能随训练样本量变化（收敛性分析） |
-| `csi_imperfection` | `plot_csi_imperfection()` | `all_experiments_summary.xlsx` Sheet3 | CSI 量化精度（2/4/6/8/10 bit）影响 |
-| `trajectory_lambda<λ>.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 队列长度/发送量/吞吐量随时隙变化轨迹 |
-| `queue_comparison_bar.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 各算法平均队列长度柱状对比 |
-| `queue_backlog_delay_vs_lambda.png` | `_plot_trajectories()` | `queue_exp*/simulation_results.json` | 类似 MAB Fig.4/Fig.5，展示平均队列积压和平均时延随 λ 的变化 |
-
-> 生成图片命令：`uv run python utils/plot_paper.py --plot <type>`，`<type>` 可选 `all`、`baseline`、`training`、`samples`、`csi`。
-
----
-
-## 研究日志（Changelog）
-
-> 本章节按时间顺序记录项目的每次重要迭代，包括成功的模块、失败的尝试、以及背后的理论分析。其他 chat 可以通过此日志快速了解项目全貌，避免重复踩坑。
-
----
-
-### v0.3 — 早期队列感知实验（历史记录，结论需重新评估）
-
-**时间：** 2026 年 5 月
-
-**目标：** 在 GAT 调度中加入队列长度信息，使调度器能够优先服务积压严重的链路，提升网络稳定性。
-
-**实现方式：**
-- 节点特征扩展：`[SNR]` → `[SNR, Q]`，即在输入特征中加入当前队列长度
-- Loss 函数修改：`L = -Σ R_i` → `L = -Σ(Q_i × R_i)`，即 MWS（Maximum Weight Scheduling）加权效用
-- 理论依据：Lyapunov 优化框架下的队列稳定性分析
-
-**早期实验结果：**
-
-| 指标 | GAT（队列感知） | GAT-base（非队列） |
-|------|---------------|-----------------|
-| 平均队列长度 | 更差 | 更好 |
-| 吞吐量比 | 更差 | 更好 |
-| 稳定性 | 更差 | 更好 |
-
-**当时的失败原因判断：**
-
-早期分析曾认为 MWS 加权 loss 在本场景下可能不适用，主要理由包括：
-
-1. **证明前提失效**：Lyapunov 稳定性证明中要求 `π² = π`（二元调度）以及服务率恒定。但我们的场景中：
-   - 调度值是连续概率 `π ∈ [0,1]`（而非二元 0/1）
-   - 服务率由 Shannon 公式 `R = log₂(1+SINR)` 决定，是随信道连续变化的
-   - 这使得 Lyapunov drift-plus-penalty 中的 `π² = π` 恒等式完全失效
-
-2. **均匀到达抹平差异化需求**：所有链路的到达率 λ 相同，调度器无法从队列状态中识别"哪条链路更需要服务"
-
-3. **训练-仿真分布不匹配**：训练时使用 `uniform(0, 500)` 的队列快照，仿真时使用 Poisson 累积队列
-
-**后续修正：** 结合后续代码检查和 MAB/Lyapunov 论文讨论，早期结论不能直接作为最终判断。连续 Shannon rate 并不必然使 Lyapunov/MWS 思路失效；早期 GAT-q 表现差可能混有实现 bug、队列特征同步问题、link-level/UAV-level 队列语义错位、单次随机到达波动、以及负载设置过载等因素。因此当前更合理的做法是：先在修正后的 link-level 队列、动态队列同步、paired Monte Carlo 公平比较口径下重新评估 GAT-q，再决定是否转向 “GAT 学空间速率结构 + 队列感知 MWS/排序调度” 的 model-based 方案。
-
-**相关脚本：** `experiments/run_queue_experiment.py`
-
-**当前状态：** 代码中保留 `use_queue` 参数和 `raw_node_dim=2` 的支持。该路线尚未最终放弃，后续应以 Monte Carlo 汇总后的 `long_term_avg_queue`、`final_avg_queue`、`throughput_ratio` 及置信区间作为判断依据。
-
----
-
-### v0.2 — 功率控制模块（已实现，效果有限）
-
-**时间：** 2026 年 4-5 月
-
-**目标：** 在 GAT 输出中增加功率控制头，使调度器不仅决定"哪些链路激活"，还决定"每条链路开多大功率"。
-
-**实现方式：**
-- GAT 输出双头：`[π_i, α_i]`，其中 `π_i ∈ [0,1]` 为激活概率，`α_i ∈ [0,1]` 为功率缩放因子
-- 可达速率修改为：`R_i = α_i × log₂(1 + α_i × SINR_i / Γ)`，其中 Γ 为 SNR gap
-- Loss 添加功率惩罚项：`L = -Σ R_i + λ × Σ α_i`
-
-**实验结果：** 在密集集群（链路数足够多）场景下，功率控制**几乎没有效果提升**。
-
-**原因分析：** 密集集群中，调度决策（"选择开哪几条链路"）已经是决定性能的主要因素。由于可选链路数量充足，简单地通过调度选择"开最好的那几条"已经接近性能上界。功率控制（"每条链路开多亮"）在这个基础上的边际收益极小。
-
-**结论：** 功率控制在密集集群基础调度中价值有限。但如果在以下方向扩展，可能仍有意义：
-- 与**队列感知**结合：优先为积压严重的链路分配更高功率
-- 与**安全约束**结合：为某些链路设定最小功率保证
-- 与**时间记忆模型**结合：在信道动态变化时动态调整功率
-
-**相关脚本：** `experiments/power_control_experiment.py`
-
-**遗留代码：** `models/model.py` 中仍保留 `use_power_control` 和双头输出的实现，代码路径未被删除。
-
----
-
-### v0.1 — CSI 量化模块（已验证，效果良好）
-
-**时间：** 2026 年 3 月
-
-**目标：** 研究信道状态信息（CSI）不完美性对调度性能的影响。
-
-**实现方式：**
-- 三种 CSI 模式：
-  - `perfect`：理想信道状态
-  - `large_scale`：仅大尺度衰落（路径损耗 + 阴影），不含小尺度
-  - `quantized`：对 SNR 做 q-bit 量化（q = 2, 4, 6, 8）
-- 距离量化：对链路距离做 q-bit 二进制编码作为边特征
-
-**实验结果：** 4-bit 以上量化性能接近完美 CSI，2-bit 量化有明显下降。
-
-**相关脚本：** `experiments/csi_imperfection_study.py`
-
----
-
-### v0.0 — 基础 GAT 调度（核心模块）
-
-**时间：** 2026 年 3 月之前
-
-**目标：** 构建基于 GAT 的链路调度框架，最大化全网总吞吐量。
-
-**核心设计：**
-- 冲突图建模：节点 = 链路，边 = 干扰关系，边权重 = 干扰强度
-- GAT 消息传递：迭代地从局部邻居学习整体网络态势
-- Loss 函数：`L = -Σ R_i`，直接最大化可达速率之和
-- 自环机制：添加自环确保节点自身信息不丢失
-
-**相关脚本：** `bin/run_experiment.py`，`experiments/scaling_experiment.py`
-
----
-
-### 进行中 — 时空结合模型（STGNN）
-
-**目标：** 将 GAT（空间推理）与 LSTM/GRU（时间记忆）结合，处理以下场景：
-- **动态信道**：UAV 移动导致大尺度信道连续变化
-- **队列历史**：队列长度的时序积累规律
-- **QoS 公平性**：通过时间记忆实现长期公平性保证
-
-**技术路线：**
-- 信道模型升级：从 block fading 升级到 3GPP TR 38.901 大尺度衰落（路径损耗 + 阴影衰落随位置连续变化）
-- 时间模型选型：**LSTM**（优于 GRU，原因见下）
-- 架构设计：**GRU 先融合时间 → 作为 GAT 的输入特征**（方式 B，保持 GAT 空间模块相对独立）
-- Loss 函数：**仍是 `-Σ π_i × R_i`**，不包含 Q。时间记忆通过 GRU 的隐状态隐式传递
-
-**LSTM 优于 GRU 的理由：**
-- RouteNet-Fermi (Purdue 2024) 的 ablation：在吞吐量相关指标上 LSTM 优于 GRU
-- LSTM 的 cell state 提供显式长期存储，适合队列历史积累
-- 参数量差异不大（LSTM 多约 20% 参数，但你的网络规模下可忽略）
-
-**审稿人问题准备（Q: Why LSTM/GRU instead of ...）：**
-> "We evaluate both LSTM and GRU as temporal encoders following the ablation study of RouteNet-Fermi [ref]. LSTM consistently achieves better performance on throughput-related metrics. The explicit memory cell in LSTM provides more stable long-term storage for queue state evolution, which aligns with our goal of capturing channel correlation over UAV trajectories. This is further supported by Chung et al. [2014], which demonstrates LSTM's superior capability in capturing long-range dependencies."
-
-**待实现（TODO）：**
-- [ ] 修改 `NetworkGenerator` 支持时序生成（UAV 轨迹 → 位置 → 3GPP 信道）
-- [ ] 修改 `QueueSimulator` 支持动态信道（`slots_per_block` 参数）
-- [ ] 实现 LSTM/GAT 联合模型类
-- [ ] 生成多时隙序列训练数据
-- [ ] BPTT 端到端训练
-
----
-
-## 关键模块说明
-
-### models/model.py — GATScheduler
-
-| 参数 | 说明 |
-|------|------|
-| `raw_node_dim` | 节点原始特征维度（`USE_QUEUE=false` 时为 1，`USE_QUEUE=true` 时为 2）|
-| `embed_node_dim` | 节点嵌入维度 |
-| `edge_dim` | 边特征维度（干扰权重）|
-| `num_heads` | 多头注意力头数 |
-| `T_iterations` | GAT 消息传递轮数 |
-| `gat_out_dim` | GAT 层总输出维度 |
-
-**输入：** `[num_links, raw_node_dim]` 节点特征 + `[2, num_edges]` 边索引 + `[num_edges, 1]` 边特征
-**输出：** `[num_links, 1]` 每条链路的激活概率 `π_v ∈ [0,1]`
-
-### utils/baseline.py — 基线算法
-
-| 算法 | 说明 |
-|------|------|
-| Random | 随机选择链路 |
-| Simple Greedy | 贪心选 SNR 最高的链路 |
-| Local Greedy | 局部干扰感知的贪心调度 |
-| FPLinQ | 分数规划调度算法（Cui et al. 2019） |
-| Spatial DL | 空间深度学习方法（Cui et al. 2019） |
-
-### simulator/ — 仿真器模块
-
-| 类 | 说明 |
-|----|------|
-| `BaseSimulator` | 仿真器抽象基类 |
-| `SimpleSimulator` | 单时隙评估（无队列，用于训练） |
-| `QueueSimulator` | 多时隙队列仿真（用于队列感知实验） |
-
-**QueueSimulator 使用注意：**
-- `include_queue_feature` 必须与模型训练时的 `USE_QUEUE` 一致
-- `arrival_lambda` 需选择合理值（过大则队列爆炸）
-
----
-
-## 训练监控
+环境：
 
 ```bash
-tensorboard --logdir=./logs/
+conda run --no-capture-output -n pytorch python -u <script.py> <args>
 ```
 
-浏览器打开 `http://localhost:6006`，查看：
+先生成N=20/30/40/50正式数据：
 
-- `train_loss`：训练 loss 曲线
-- `val_utility`：验证集效用曲线
-- `pi_mean` / `pi_std`：链路平均激活概率
+```bash
+conda run --no-capture-output -n pytorch python -u \
+  scripts/prepare_paper_datasets.py --num-uavs 50,40,30,20
+```
 
----
+训练一个N=20 Channel-GAT：
 
-## 注意事项
+```bash
+conda run --no-capture-output -n pytorch python -u \
+  train/train_channel_gat_rician.py --num_uav 20 --epochs 30
+```
 
-1. **参数管理**：所有超参数集中于 `configs/exp_example.yaml`，不要直接改代码。
-2. **实验复现**：务必使用 `--seed` 设置随机种子，相同 seed + 相同配置 = 相同结果。
-3. **数据集缓存**：按 `NUM_UAV` 分离；修改后会自动生成新数据集。
-4. **GPU 选择**：多卡环境下用 `--gpu-id` 指定。
-5. **Excel 汇总**：`ExperimentRunner` 自动将每次运行结果追加到 `results/all_experiments_summary.xlsx`。
-6. **防呆设计**：队列感知实验中若参数不一致，会打印 ERROR 并终止运行。
+固定CSI脚本已经能通过显式`--methods`同时选择两种MarginalMP。正式运行必须显式给出
+经过审计、且与N/功率/Rician K匹配的Channel-GAT checkpoint：
+
+```bash
+conda run --no-capture-output -n pytorch python -u \
+  experiments/exp_fixed_csi_qos.py --num_uav 20 --num_slots 10000 \
+  --methods "GAT-Assisted MarginalMP,Direct-Link MarginalMP,Direct-Link LocalMax,Direct-Link Join,Hard-Conflict LGS,Random,Centralized Greedy" \
+  --channel_gat_checkpoint <AUDITED_N20_RICIAN_K5_TX10_CHECKPOINT>
+```
+
+移动CSI脚本当前仍是上一版Direct-Link单调度器入口。下一项正式仿真任务必须先完成
+`docs/EXPERIMENTS.md`第8节的二维配对接口，再运行移动主图；当前旧默认命令不能作为投稿
+版GAT-assisted结果。
+
+全部投稿图的定义、baseline和接口闸门见[`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)。
+完成Gate 0后，下一任务再把最终可运行命令逐条回填到README。统一作图入口是
+`scripts/plot_paper_figures.py`；固定CSI QoS脚本会直接生成自己的多指标图。
+
+## 6. 数据与模型防误用规则
+
+正式静态数据路径为：
+
+```text
+datasets/paper/rician_K5_tx10/perfect/N{N}/
+```
+
+每个目录同时保存pickle数据和`manifest.json`。代码校验信道类型、Rician K因子、发射
+功率、UAV数量、split大小、随机种子和fingerprint；文件名相似但metadata不匹配时拒绝
+加载。
+
+快速检查数据manifest（训练完成后可加`--require-models`同时检查checkpoint）：
+
+```bash
+conda run --no-capture-output -n pytorch python -u \
+  scripts/verify_paper_artifacts.py --num-uavs 20,30,40,50
+```
+
+正式GAT checkpoint位于`results/models/paper/`，并保存同样的物理metadata和非坍缩
+审计结果。最终作图前重新训练；不得因目录中恰好已有`.pth`就静默加载。
+
+原会议数据`datasets/dataset_numUAV=20/30/40/50.pkl`和原结果保留原位置，避免破坏历史
+图的追溯，但它们不是Rician投稿数据。
+
+## 7. 保留的baseline
+
+满缓存：Random、Top-SNR、Local Greedy、Spatial DL、FPLinQ和Channel-GAT。
+
+动态队列：Random、GAT/Direct-Link LocalMax、Direct-Link Join、Hard-Conflict LGS、
+End-to-End GAT-Q、Weighted FPLinQ、Centralized Greedy、Direct-Link MarginalMP和
+GAT-Assisted MarginalMP。
+
+第三方依赖缺失时程序会明确失败，不会用另一方法替代。Spatial DL不能未经队列输入和
+重新训练就称作QoS baseline；DistGCN只有完成checkpoint和TensorFlow适配验证后才能
+报告数值。
+
+## 8. 当前结论边界
+
+- Channel-GAT保留为满缓存总速率方法；
+- GAT-Assisted MarginalMP是为了跨章节连续性选定的队列调度主方案；
+- Direct-Link MarginalMP是必要消融；现有证据不支持“GAT增强MarginalMP”的因果说法，
+  正式配对实验必须如实报告二者差异；
+- CG-CSI只保留为可选鲁棒性支线，默认关闭；
+- Centralized Greedy是强参考而非数学上界；
+- 所有消息轮数、payload、本地计算和CSI获取开销必须分开核算。

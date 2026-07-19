@@ -145,10 +145,37 @@ class GATScheduler(nn.Module):
     def __init__(self, raw_node_dim, mlp_hidden_dims, embed_node_dim,
                  edge_dim, gat_out_dim, num_heads, T_iterations,
                  schedule_hidden_dim=32, dropout=0.0,
-                 use_power_control=False, power_hidden_dim=16):
+                 use_power_control=False, power_hidden_dim=16,
+                 input_feature_mean=None, input_feature_std=None,
+                 use_input_skip=False, initial_schedule_bias=-0.5,
+                 stochastic_ste=False):
         super().__init__()
         self.use_power_control = use_power_control
         self.power_hidden_dim = power_hidden_dim
+        self.use_input_skip = use_input_skip
+        self.stochastic_ste = stochastic_ste
+        self.decision_threshold = 0.5
+
+        # Input normalization is part of the model inference path so training
+        # and multi-slot simulation always use the same statistics. These
+        # buffers are saved as checkpoint metadata by the queue experiment.
+        feature_mean = torch.zeros(raw_node_dim, dtype=torch.float32)
+        feature_std = torch.ones(raw_node_dim, dtype=torch.float32)
+        if input_feature_mean is not None:
+            feature_mean = torch.as_tensor(input_feature_mean, dtype=torch.float32)
+        if input_feature_std is not None:
+            feature_std = torch.as_tensor(input_feature_std, dtype=torch.float32)
+        if feature_mean.numel() != raw_node_dim or feature_std.numel() != raw_node_dim:
+            raise ValueError(
+                f"Input normalization expects {raw_node_dim} values, "
+                f"got mean={feature_mean.numel()}, std={feature_std.numel()}."
+            )
+        self.register_buffer("input_feature_mean", feature_mean, persistent=False)
+        self.register_buffer(
+            "input_feature_std", torch.clamp(feature_std, min=1e-6), persistent=False
+        )
+        self.latest_scores = None
+
         # Initial MLP for node embedding
         self.node_embed = NodeEmbedding(
             input_dim=raw_node_dim,
@@ -178,18 +205,19 @@ class GATScheduler(nn.Module):
         # 缺点：
         # 1. 失去了"竞争"机制，需要更强的稀疏性惩罚和冲突惩罚
         # 2. 需要调整初始化，让初始概率接近 0.1-0.2（而不是 0.5）
-        final_layers = [nn.Linear(gat_out_dim, schedule_hidden_dim), nn.ReLU()]
+        scheduler_input_dim = gat_out_dim + raw_node_dim if use_input_skip else gat_out_dim
+        final_layers = [nn.Linear(scheduler_input_dim, schedule_hidden_dim), nn.ReLU()]
         if dropout and dropout > 0.0:
             final_layers.append(nn.Dropout(p=dropout))
         final_layers.append(nn.Linear(schedule_hidden_dim, 1))
         self.final_scheduler = nn.Sequential(*final_layers)
-        # 🔥 改进初始化：让初始概率更大，避免过早陷入0
-        # 初始化：让初始概率接近 0.3-0.4（中等激活，给模型更多探索空间）
-        # sigmoid(score) = 0.3 时，score ≈ -0.85
-        # sigmoid(score) = 0.4 时，score ≈ -0.41
-        # 我们初始化 bias 为 -0.5，让初始概率在 0.38 左右（更高，避免过早陷入0）
+        # Queue v3 uses bias=0 so stochastic STE starts with both 0/1
+        # decisions present; the non-queue baseline keeps its historical bias.
         last_linear_idx = len(final_layers) - 1  # 最后Linear层的索引
-        nn.init.constant_(self.final_scheduler[last_linear_idx].bias, -0.5)
+        nn.init.constant_(
+            self.final_scheduler[last_linear_idx].bias,
+            float(initial_schedule_bias),
+        )
         # 权重初始化：使用Xavier初始化，让梯度更稳定
         nn.init.xavier_uniform_(self.final_scheduler[0].weight, gain=0.3)  # 第一个Linear层
         nn.init.xavier_uniform_(self.final_scheduler[last_linear_idx].weight, gain=0.3)  # 最后一个Linear层
@@ -209,6 +237,26 @@ class GATScheduler(nn.Module):
             nn.init.xavier_uniform_(self.power_head[0].weight, gain=0.3)
             nn.init.xavier_uniform_(self.power_head[power_last_linear_idx].weight, gain=0.3)
 
+    def encode(self, x, edge_index, edge_attr):
+        """Return normalized local features and the final GAT embedding."""
+        x_normalized = (x - self.input_feature_mean) / self.input_feature_std
+        h_v = self.node_embed(x_normalized)
+        for i in range(self.T_iterations):
+            h_v = self.gat_layers[i](h_v, edge_index, edge_attr)
+            if i != self.T_iterations - 1:
+                h_v = F.elu(h_v)
+        return x_normalized, h_v
+
+    def schedule_logits(self, x, edge_index, edge_attr):
+        """Return pre-sigmoid scheduling scores and the channel embedding."""
+        x_normalized, h_v_final = self.encode(x, edge_index, edge_attr)
+        scheduler_input = (
+            torch.cat([h_v_final, x_normalized], dim=1)
+            if self.use_input_skip else h_v_final
+        )
+        scores = self.final_scheduler(scheduler_input)
+        return scores, h_v_final
+
     def forward(self, x, edge_index, edge_attr, use_ste=False):
         """
         Args:
@@ -221,19 +269,8 @@ class GATScheduler(nn.Module):
             alpha: Power scaling factors [num_nodes, 1]，值域(0,1]（仅 use_power_control=True 模式）
             h_v_final: Final node embedding [num_nodes, gat_out_dim * num_heads]
         """
-        h_v = self.node_embed(x)    # initial node embedding
-
-        # GAT layers for T iterations (message passing)
-        for i in range(self.T_iterations):
-            h_v = self.gat_layers[i](h_v, edge_index, edge_attr)
-            if i != self.T_iterations - 1:
-                h_v = F.elu(h_v)    # initial multi-head GAT paper uses elu, may try other activation functions
-
-        h_v_final = h_v
-
-        # Final scheduling: 使用 sigmoid 直接输出概率
-        # 🔥 关键改进：避免 softmax 饱和问题
-        scores = self.final_scheduler(h_v_final)  # [N, 1]，原始分数
+        scores, h_v_final = self.schedule_logits(x, edge_index, edge_attr)
+        self.latest_scores = scores.detach()
         
         # 🔥 温度缩放：训练时使用较大温度，让分布更平缓，梯度更稳定
         # 评估时使用较小温度，让决策更清晰
@@ -249,7 +286,11 @@ class GATScheduler(nn.Module):
             # Straight-Through Estimator (STE):
             # 前向传播：使用硬决策（0/1）打破对称性
             # 反向传播：梯度通过软概率回传，保持可微
-            pi_hard = (pi_soft > 0.5).float()  # 硬决策：>0.5为1，否则为0
+            pi_hard = (
+                torch.bernoulli(pi_soft)
+                if self.stochastic_ste
+                else (pi_soft > 0.5).float()
+            )
             pi_v = pi_hard - pi_soft.detach() + pi_soft  # STE技巧
         else:
             # 评估时或不用STE：直接返回连续概率
@@ -354,206 +395,3 @@ def calculate_achievable_rate(pi, state, binary=True, detach_hard=False, alpha=N
     achievable_rates = pi_flat * torch.log2(1 + sinr / snr_gap)
 
     return achievable_rates
-
-
-# ========== 方案2：可微Top-K选择器（带冲突掩码） ==========
-def build_conflict_mask(edge_index, num_nodes):
-    """
-    构建冲突掩码矩阵
-    
-    Args:
-        edge_index: [2, E] 冲突边索引
-        num_nodes: 节点数量
-    
-    Returns:
-        conflict_mask: [N, N] 布尔矩阵，conflict_mask[i,j]=True表示链路i和j冲突
-    """
-    conflict_mask = torch.zeros(num_nodes, num_nodes, dtype=torch.bool, device=edge_index.device)
-    if edge_index.size(1) > 0:
-        src, dst = edge_index[0], edge_index[1]
-        conflict_mask[src, dst] = True
-        # 冲突是对称的（如果i干扰j，那么j也可能干扰i，或者至少不能同时激活）
-        conflict_mask[dst, src] = True
-    return conflict_mask
-
-def differentiable_topk_gumbel(scores, k, temperature=1.0):
-    """
-    使用Gumbel噪声实现可微的Top-K选择
-    
-    Args:
-        scores: [N, 1] 分数
-        k: 要选择的链路数量
-        temperature: 温度参数，越小越接近硬选择
-    
-    Returns:
-        mask: [N, 1] one-hot mask，选中的链路为1，否则为0
-    """
-    # Gumbel噪声
-    gumbel_noise = -torch.log(-torch.log(torch.rand_like(scores) + 1e-10) + 1e-10)
-    perturbed_scores = scores + temperature * gumbel_noise
-    
-    # Top-K选择
-    k = min(k, scores.size(0))
-    topk_values, topk_indices = torch.topk(perturbed_scores.squeeze(-1), k, dim=0)
-    
-    # 创建one-hot mask
-    mask = torch.zeros_like(scores)
-    mask[topk_indices] = 1.0
-    return mask
-
-def greedy_selection_with_conflict_mask(scores, edge_index, k, max_iterations=None):
-    """
-    逐步贪心选择，每次选择分数最高的未冲突链路
-    
-    Args:
-        scores: [N, 1] 分数
-        edge_index: [2, E] 冲突边索引
-        k: 目标选择数量
-        max_iterations: 最大迭代次数（如果为None，则使用k）
-    
-    Returns:
-        selected: [N, 1] 选中的链路为1，否则为0
-    """
-    num_nodes = scores.size(0)
-    selected = torch.zeros(num_nodes, device=scores.device)
-    conflict_mask = build_conflict_mask(edge_index, num_nodes)
-    
-    if max_iterations is None:
-        max_iterations = min(k, num_nodes)
-    
-    for _ in range(max_iterations):
-        # 计算可用分数（已选链路和冲突链路分数置为-inf）
-        available_scores = scores.clone().squeeze(-1)
-        available_scores[selected > 0.5] = -float('inf')
-        
-        # 掩码冲突链路：如果链路i已选，则其所有冲突邻居的分数置为-inf
-        for i in range(num_nodes):
-            if selected[i] > 0.5:  # 如果链路i已选
-                conflict_neighbors = conflict_mask[i]
-                available_scores[conflict_neighbors] = -float('inf')
-        
-        # 选择分数最高的
-        best_idx = available_scores.argmax()
-        if available_scores[best_idx] > -float('inf'):
-            selected[best_idx] = 1.0
-        else:
-            break  # 没有可用链路了
-    
-    return selected.unsqueeze(-1)
-
-# ========== 方案3：自适应λ调整（目标并发度ρ） ==========
-class AdaptiveSparsityController:
-    """
-    自适应稀疏控制器：通过拉格朗日对偶方法自适应调整λ
-    
-    核心思想：
-    - 设置目标并发度ρ（期望激活的链路比例）
-    - 如果当前激活率 > ρ，增大λ（惩罚激活）
-    - 如果当前激活率 < ρ，减小λ（鼓励激活）
-    """
-    def __init__(self, target_rho=0.3, lambda_init=0.5, lr_lambda=0.01, lambda_min=0.0, lambda_max=10.0):
-        """
-        Args:
-            target_rho: 目标并发度（期望激活的链路比例，如0.3表示30%的链路激活）
-            lambda_init: 初始λ值
-            lr_lambda: λ的学习率（对偶更新的步长）
-            lambda_min: λ的最小值
-            lambda_max: λ的最大值
-        """
-        self.target_rho = target_rho
-        self.lambda_val = lambda_init
-        self.lr_lambda = lr_lambda
-        self.lambda_min = lambda_min
-        self.lambda_max = lambda_max
-    
-    def update(self, current_rho):
-        """
-        根据当前激活率更新λ
-        
-        Args:
-            current_rho: 当前epoch的平均激活率（mean(π)）
-        
-        Returns:
-            lambda_val: 更新后的λ值
-        """
-        # 对偶更新：λ_{t+1} = [λ_t + η·(mean(π_t) - ρ)]_+
-        # 如果激活率太高（current_rho > target_rho），增大λ
-        # 如果激活率太低（current_rho < target_rho），减小λ
-        self.lambda_val = self.lambda_val + self.lr_lambda * (current_rho - self.target_rho)
-        # 裁剪到合理范围
-        self.lambda_val = max(self.lambda_min, min(self.lambda_max, self.lambda_val))
-        return self.lambda_val
-    
-    def get_lambda(self):
-        """获取当前λ值"""
-        return self.lambda_val
-
-# ========== 方案4：特征增强 ==========
-def enhance_node_features(state):
-    """
-    增强节点特征，添加度数、局部干扰统计等
-    
-    Args:
-        state: NetworkState对象
-    
-    Returns:
-        enhanced_features: [N, enhanced_dim] 增强后的特征
-    """
-    num_links = state.num_vertices
-    edge_index = state.edge_index
-    edge_weights = state.edge_weights
-    device = state.vertex_features.device
-    
-    if num_links == 0:
-        return state.vertex_features
-    
-    # 1. 计算度数
-    in_degree = torch.zeros(num_links, device=device)
-    out_degree = torch.zeros(num_links, device=device)
-    if edge_index.size(1) > 0:
-        src, dst = edge_index[0], edge_index[1]
-        out_degree.scatter_add_(0, src, torch.ones_like(src, dtype=torch.float))
-        in_degree.scatter_add_(0, dst, torch.ones_like(dst, dtype=torch.float))
-    
-    # 2. 计算局部干扰统计
-    in_interference = torch.zeros(num_links, device=device)
-    out_interference = torch.zeros(num_links, device=device)
-    if edge_index.size(1) > 0:
-        src, dst = edge_index[0], edge_index[1]
-        weights_flat = edge_weights.squeeze(-1)
-        out_interference.scatter_add_(0, src, weights_flat)
-        in_interference.scatter_add_(0, dst, weights_flat)
-    
-    # 3. SNR排名
-    snr_values = state.vertex_features[:, 0]
-    snr_rank = torch.argsort(torch.argsort(snr_values, descending=True)).float()
-    if num_links > 1:
-        snr_rank = snr_rank / (num_links - 1)  # 归一化到[0,1]
-    else:
-        snr_rank = torch.zeros(1, device=device)
-    
-    # 4. 归一化度数（避免数值过大）
-    max_degree = max(in_degree.max().item(), out_degree.max().item(), 1.0)
-    in_degree_norm = in_degree / max_degree
-    out_degree_norm = out_degree / max_degree
-    
-    # 5. 归一化干扰（使用log，因为干扰值可能很大）
-    max_interference = max(in_interference.max().item(), out_interference.max().item(), 1.0)
-    if max_interference > 0:
-        in_interference_norm = torch.log10(in_interference + 1) / torch.log10(torch.tensor(max_interference + 1, device=device))
-        out_interference_norm = torch.log10(out_interference + 1) / torch.log10(torch.tensor(max_interference + 1, device=device))
-    else:
-        in_interference_norm = torch.zeros_like(in_interference)
-        out_interference_norm = torch.zeros_like(out_interference)
-    
-    # 6. 拼接特征：[原始SNR, 入度, 出度, 入干扰, 出干扰, SNR排名]
-    enhanced_features = torch.stack([
-        state.vertex_features[:, 0],  # 原始SNR
-        in_degree_norm,
-        out_degree_norm,
-        in_interference_norm,
-        out_interference_norm,
-        snr_rank
-    ], dim=1)
-    
-    return enhanced_features

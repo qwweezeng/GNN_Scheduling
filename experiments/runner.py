@@ -39,19 +39,24 @@ class ExperimentRunner:
             height_min=height_range[0],
             height_max=height_range[1],
             uav_min_distance=p.get("MIN_DISTANCE", 20),
-            tx_power=p.get("TX_POWER", 22),
+            tx_power=p.get("TX_POWER", 10),
             Gt=p.get("G_T", 0),
             Gr=p.get("G_R", 0),
             bandwidth=p.get("BANDWIDTH", 5e6),      # 5 MHz（与基线一致）
             carrier_f=p.get("CARRIER_FREQ", 2.4e9), # 2.4 GHz（与基线一致）
             noise_psd=p.get("NOISE_PSD", -169),     # -169 dBm/Hz（与基线一致）
-            snr_gap_db=p.get("SNR_GAP_DB", 0)       # 0 dB = 无gap（与基线一致）
+            snr_gap_db=p.get("SNR_GAP_DB", 0),      # 0 dB = 无gap（与基线一致）
+            channel_model=p.get("CHANNEL_MODEL", "rayleigh"),
+            rician_k_db=p.get("RICIAN_K_DB", 5.0),
         )
 
         # CSI 模式：统一控制模型输入 + 速率计算
         csi_mode = p.get("CSI_MODE", "perfect")
         q_bits = p.get("Q_BITS", 8)
-        print(f"[runner] CSI_MODE={csi_mode}, Q_BITS={q_bits}")
+        print(
+            f"[runner] CSI_MODE={csi_mode}, Q_BITS={q_bits}, "
+            f"CHANNEL_MODEL={gen.channel_model}, K={gen.rician_k_db} dB"
+        )
 
         # 队列感知开关（定义在使用点之前，与 include_queue_feature 联动）
         use_queue = p.get("USE_QUEUE", False)
@@ -71,9 +76,49 @@ class ExperimentRunner:
             try:
                 with open(cache_path, "rb") as f:
                     cached_datasets = pkl.load(f)
+                cache_metadata = cached_datasets.get('metadata', {})
                 full_train_set = cached_datasets['train_set']
                 full_val_set = cached_datasets['val_set']
-                full_test_set = cached_datasets['test_set']
+                if 'test_set' in cached_datasets:
+                    full_test_set = cached_datasets['test_set']
+                else:
+                    test_cache_path = p.get("TEST_DATASET_CACHE_PATH")
+                    if not test_cache_path or not os.path.exists(test_cache_path):
+                        raise KeyError(
+                            "Training cache has no test_set and the configured "
+                            "TEST_DATASET_CACHE_PATH does not exist: "
+                            f"{test_cache_path}"
+                        )
+                    print(
+                        "[runner] Loading separate formal test bank from "
+                        f"{test_cache_path}"
+                    )
+                    with open(test_cache_path, "rb") as test_file:
+                        cached_test = pkl.load(test_file)
+                    full_test_set = cached_test['test_set']
+                    test_metadata = cached_test.get('metadata', {})
+                    expected_test = {
+                        "num_uav": int(p.get("NUM_UAV", 50)),
+                        "channel_model": str(
+                            p.get("CHANNEL_MODEL", "rayleigh")
+                        ).lower(),
+                        "tx_power_dbm": float(p.get("TX_POWER", 10.0)),
+                        "csi_mode": csi_mode,
+                    }
+                    test_mismatches = {
+                        key: (test_metadata.get(key), expected)
+                        for key, expected in expected_test.items()
+                        if (
+                            str(test_metadata.get(key)).lower() != str(expected).lower()
+                            if key == "channel_model"
+                            else test_metadata.get(key) != expected
+                        )
+                    }
+                    if test_mismatches:
+                        raise ValueError(
+                            "Separate test-bank metadata mismatch: "
+                            f"{test_mismatches}"
+                        )
 
                 # sample according to requested sizes
                 train_size = p.get("TRAIN_SIZE", 200)
@@ -88,6 +133,7 @@ class ExperimentRunner:
 
                 # 【安全检查】验证缓存数据的 include_queue_feature 与 link-level 队列语义
                 if len(val_set) > 0:
+                    sample = val_set[0]
                     cached_include_queue = getattr(val_set[0], 'include_queue_feature', None)
                     queue_shape_ok = True
                     if include_queue_feature:
@@ -103,6 +149,66 @@ class ExperimentRunner:
                               "Will regenerate.")
                         print(f"[runner] Expected vertex_features dim: {1 if not use_queue else 2}, "
                               f"cached dim: {val_set[0].vertex_features.size(1)}")
+                        train_set = val_set = test_set = None
+
+                    # A cache filename is not physical metadata. In particular,
+                    # legacy dataset_numUAV=10.pkl files may contain 22 dBm
+                    # NetworkState objects while the current YAML says 10 dBm.
+                    physical_mismatches = []
+                    cached_tx_power = getattr(sample, 'tx_power', None)
+                    if cached_tx_power is None or not np.isclose(
+                        float(cached_tx_power), float(gen.tx_power), rtol=1e-6, atol=0.0
+                    ):
+                        physical_mismatches.append(
+                            f"tx_power_W cache={cached_tx_power}, expected={gen.tx_power}"
+                        )
+                    cached_num_uav = int(sample.positions.shape[0])
+                    if cached_num_uav != int(p.get("NUM_UAV", 50)):
+                        physical_mismatches.append(
+                            f"num_uav cache={cached_num_uav}, expected={p.get('NUM_UAV', 50)}"
+                        )
+                    cached_csi_mode = getattr(sample, 'csi_mode', None)
+                    if cached_csi_mode != csi_mode:
+                        physical_mismatches.append(
+                            f"csi_mode cache={cached_csi_mode}, expected={csi_mode}"
+                        )
+                    expected_channel_model = str(
+                        p.get("CHANNEL_MODEL", "rayleigh")
+                    ).lower()
+                    cached_channel_model = cache_metadata.get("channel_model")
+                    if cached_channel_model is not None:
+                        if str(cached_channel_model).lower() != expected_channel_model:
+                            physical_mismatches.append(
+                                "channel_model cache="
+                                f"{cached_channel_model}, expected={expected_channel_model}"
+                            )
+                    elif expected_channel_model != "rayleigh":
+                        physical_mismatches.append(
+                            "legacy cache has no channel_model metadata; "
+                            f"cannot verify requested {expected_channel_model} fading"
+                        )
+                    if expected_channel_model == "rician" and cached_channel_model is not None:
+                        cached_k_db = cache_metadata.get("rician_k_db")
+                        expected_k_db = float(p.get("RICIAN_K_DB", 5.0))
+                        if cached_k_db is None or not np.isclose(
+                            float(cached_k_db), expected_k_db, rtol=0.0, atol=1e-9
+                        ):
+                            physical_mismatches.append(
+                                f"rician_k_db cache={cached_k_db}, expected={expected_k_db}"
+                            )
+                    if csi_mode == "quantized" and cache_metadata:
+                        cached_q_bits = cache_metadata.get("q_bits")
+                        if cached_q_bits != int(q_bits):
+                            physical_mismatches.append(
+                                f"q_bits cache={cached_q_bits}, expected={int(q_bits)}"
+                            )
+                    if physical_mismatches:
+                        print(
+                            "[runner] WARNING: Cached physical configuration does not "
+                            "match the current YAML:\n  - "
+                            + "\n  - ".join(physical_mismatches)
+                            + "\n[runner] Will regenerate instead of silently mixing experiments."
+                        )
                         train_set = val_set = test_set = None
             except Exception as e:
                 print(f"[runner] Failed to load cache {cache_path}: {e}, will generate new datasets")
@@ -137,6 +243,15 @@ class ExperimentRunner:
             if cache_path:
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 datasets_to_save = {
+                    'metadata': {
+                        'num_uav': int(p.get("NUM_UAV", 50)),
+                        'tx_power_dbm': float(p.get("TX_POWER", 10)),
+                        'tx_power_w': float(gen.tx_power),
+                        'csi_mode': csi_mode,
+                        'q_bits': int(q_bits),
+                        'channel_model': str(gen.channel_model),
+                        'rician_k_db': float(gen.rician_k_db),
+                    },
                     'train_set': train_set,
                     'val_set': val_set,
                     'test_set': test_set
@@ -256,4 +371,3 @@ class ExperimentRunner:
                 print(f"[runner] Failed to run baselines: {e}")
 
         return {"trained": trained, "test_util": test_util}
-

@@ -1,102 +1,122 @@
 #!/usr/bin/env python3
-"""
-收敛性分析实验：研究不同训练样本数量(train_size)对模型性能的影响
+"""Paper Fig. 2: Channel-GAT convergence and training-set-size study.
 
-Usage:
-    uv run python experiments/convergence_analysis.py
-    uv run python experiments/convergence_analysis.py --train_sizes 20 50 100 200
+All points use prefixes of one canonical 500-sample training bank and share
+the same 128-sample validation and test banks.
 """
 
-import os
-import sys
+from __future__ import annotations
+
 import argparse
+import json
+import random
+import sys
+from pathlib import Path
+
 import numpy as np
+import torch
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from experiments.runner import ExperimentRunner
+from train.trainer import Trainer  # noqa: E402
+from utils.artifacts import (  # noqa: E402
+    expected_dataset_metadata,
+    load_validated_dataset,
+    paper_dataset_paths,
+)
+from utils.project_setup import build_gat_scheduler, load_config  # noqa: E402
 
 
-def run_convergence_analysis(cfg, train_sizes):
-    all_results = []
-    print(f"{'=' * 60}")
-    print("收敛性分析实验")
-    print(f"{'=' * 60}")
-    print(f"测试的训练样本数量: {train_sizes}")
-
-    for i, train_size in enumerate(train_sizes):
-        print(f"\n{'-' * 50}")
-        print(f"运行实验 {i+1}/{len(train_sizes)}: train_size = {train_size}")
-
-        params = cfg.copy()
-        params["TRAIN_SIZE"] = train_size
-        params["NOTES"] = f"收敛性分析_train_size={train_size}"
-        params["EXPERIMENT_GROUP"] = "convergence_analysis"
-        params["EXCEL_SHEET"] = "Sheet2"
-        params["SEED"] = cfg["SEED"] + i
-
-        # 自动推导 NODE_RAW_DIM（与 runner.py 保持一致）
-        use_queue = params.get("USE_QUEUE", False)
-        if params.get("NODE_RAW_DIM") is not None:
-            node_raw_dim = params.get("NODE_RAW_DIM")
-        else:
-            node_raw_dim = 2 if use_queue else 1
-        params["NODE_RAW_DIM"] = node_raw_dim
-
-        runner = ExperimentRunner(
-            params,
-            results_dir=params.get("RESULTS_DIR", "./results"),
-            log_dir=params.get("LOG_DIR", "./logs"),
-            gpu_id=cfg.get("GPU_ID", 0),
-        )
-        res = runner.run()
-        trained = res.get('trained', {})
-
-        result = {
-            "train_size": train_size,
-            "test_util": res.get('test_util', 0),
-            "best_val_utility": trained.get("best_val_utility", 0),
-            "final_train_loss": trained.get("final_train_loss", 0),
-        }
-        all_results.append(result)
-        print(f"train_size={train_size} -> "
-              f"test_util={result['test_util']:.4f}, "
-              f"best_val={result['best_val_utility']:.4f}")
-
-    print(f"\n{'=' * 60}")
-    print("收敛性分析实验完成")
-    print(f"{'=' * 60}")
-    print(f"\n  {'Train Size':>10}  {'Test Util':>12}  {'Best Val':>12}  {'Final Loss':>12}")
-    print(f"  {'─' * 10}  {'─' * 12}  {'─' * 12}  {'─' * 12}")
-    for r in sorted(all_results, key=lambda x: x["train_size"]):
-        print(f"  {r['train_size']:>10}  {r['test_util']:>12.4f}  "
-              f"{r['best_val_utility']:>12.4f}  {r['final_train_loss']:>12.4f}")
-    return all_results
+def _seed(value):
+    random.seed(value)
+    np.random.seed(value)
+    torch.manual_seed(value)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="收敛性分析实验")
-    parser.add_argument('--config', '-c', type=str, default='configs/exp_example.yaml')
-    parser.add_argument('--gpu_id', type=int, default=0)
-    parser.add_argument('--train_sizes', type=int, nargs='+', default=[20, 50, 100, 200])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", default="configs/paper.yaml")
+    parser.add_argument("--num_uav", type=int, default=20)
+    parser.add_argument(
+        "--train_sizes", type=int, nargs="+", default=[50, 100, 200, 300, 500]
+    )
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--seed", type=int, default=10086)
+    parser.add_argument(
+        "--output", default="results/paper/channel_gat_training/sample_efficiency_N20.json"
+    )
     args = parser.parse_args()
 
-    import yaml
-    def load_config(path):
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
+    if min(args.train_sizes) <= 0 or max(args.train_sizes) > 500:
+        raise ValueError("train_sizes must be between 1 and the canonical pool size 500")
+    config = load_config(args.config)
+    config.update({
+        "NUM_UAV": args.num_uav,
+        "TX_POWER": 10.0,
+        "CHANNEL_MODEL": "rician",
+        "RICIAN_K_DB": 5.0,
+        "CSI_MODE": "perfect",
+    })
+    seeds = {"train": 10086, "val": 10087, "test": 10088}
+    sizes = {"train": 500, "val": 128, "test": 128}
+    expected = expected_dataset_metadata(config, args.num_uav, seeds, sizes)
+    train_val_path, test_path = paper_dataset_paths(
+        Path("datasets/paper"), args.num_uav, seeds, sizes
+    )
+    train_val = load_validated_dataset(
+        train_val_path, expected, ("train", "val")
+    )
+    test = load_validated_dataset(test_path, expected, ("test",))
 
-    cfg = load_config(args.config)
+    runs = []
+    for train_size in args.train_sizes:
+        _seed(args.seed)
+        model = build_gat_scheduler(config, raw_node_dim=1)
+        optimizer = torch.optim.Adam(model.parameters(), lr=float(config["LR"]))
+        trainer = Trainer(
+            model,
+            optimizer,
+            device="cpu",
+            use_queue=False,
+            log_dir=f"logs/paper/convergence/N{args.num_uav}_n{train_size}",
+        )
+        trained = trainer.train(
+            num_epochs=args.epochs,
+            train_dataset=list(train_val["train_set"][:train_size]),
+            val_dataset=train_val["val_set"],
+            eval_interval=1,
+            use_queue=False,
+        )
+        test_utility = float(
+            trainer.evaluate(model, test["test_set"], use_queue=False)
+        )
+        run = {
+            "train_size": train_size,
+            "best_epoch": trained["best_epoch"],
+            "best_val_utility": trained["best_val_util"],
+            "test_utility": test_utility,
+            "per_epoch": trained["per_epoch_logs"],
+        }
+        runs.append(run)
+        print(
+            f"train_size={train_size}: test={test_utility:.4f}, "
+            f"best_epoch={trained['best_epoch']}"
+        )
 
-    print("=" * 60)
-    print("Convergence Analysis Experiment")
-    print("=" * 60)
-    print(f"  Config  : {args.config}")
-    print(f"  Network : {cfg.get('NUM_UAV', 40)} UAVs")
-    print(f"  GPU ID  : {args.gpu_id}")
-
-    run_convergence_analysis(cfg, args.train_sizes)
+    output = Path(args.output)
+    if output.name.endswith("N20.json") and args.num_uav != 20:
+        output = output.with_name(f"sample_efficiency_N{args.num_uav}.json")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps({
+        "experiment": "paper_channel_gat_sample_efficiency_v1",
+        "num_uav": args.num_uav,
+        "shared_train_val_path": str(train_val_path),
+        "shared_test_path": str(test_path),
+        "dataset_fingerprint": expected["fingerprint"],
+        "training_seed_reused_for_fair_initialization": args.seed,
+        "runs": runs,
+    }, indent=2), encoding="utf-8")
+    print(f"saved: {output}")
 
 
 if __name__ == "__main__":

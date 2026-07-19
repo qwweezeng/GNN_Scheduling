@@ -47,7 +47,8 @@ def dequantize_distance_from_binindex(bin_index, q=8, d_min=2.0, d_max=1000.0):
 class NetworkGenerator:
     def __init__(self, num_uavs, area_width, height_min, height_max, uav_min_distance,
                  tx_power, Gt, Gr, noise_psd=-169, bandwidth=5e6, carrier_f=2.4e9, 
-                 snr_thres=5, snr_gap_db=0, flow_lambda=10e6):
+                 snr_thres=5, snr_gap_db=0, flow_lambda=10e6,
+                 channel_model="rayleigh", rician_k_db=5.0):
         # network parameters
         self.num_uavs = num_uavs
         self.area_width = area_width
@@ -71,6 +72,19 @@ class NetworkGenerator:
         self.snr_gap_db = snr_gap_db
         self.snr_gap = 10**(snr_gap_db/10)
         self.flow_lambda = flow_lambda # flow in queue
+        self.channel_model = str(channel_model).lower()
+        self.rician_k_db = float(rician_k_db)
+        if self.channel_model not in {"rayleigh", "rician", "pure_los"}:
+            raise ValueError(
+                "channel_model must be rayleigh, rician, or pure_los; "
+                f"got {channel_model!r}"
+            )
+        if self.channel_model == "rician" and (
+            not np.isfinite(self.rician_k_db) or self.rician_k_db < 0.0
+        ):
+            raise ValueError(
+                "rician_k_db must be a finite nonnegative value for Rician fading"
+            )
 
         # initiate network state
         # self._init_positions()
@@ -124,11 +138,29 @@ class NetworkGenerator:
 
     def _channel_gain(self, positions):
         dist = torch.cdist(positions, positions, p=2)
-        large_scale = self.lambda0**(1/2) * dist**(-self.xi / 2)
-        # 正确生成复信道 h_ss ~ CN(0,1)：实部虚部独立 N(0, 0.5)，使得 |h_ss|² ~ Exp(1)
+        safe_dist = dist.clamp_min(self.min_distance)
+        large_scale = self.lambda0**(1/2) * safe_dist**(-self.xi / 2)
+        large_scale.fill_diagonal_(0.0)
+        # Diffuse component: CN(0,1), hence E|g_diffuse|^2=1.
         real_part = torch.randn_like(dist) / np.sqrt(2)
         imag_part = torch.randn_like(dist) / np.sqrt(2)
-        h = large_scale * (real_part + 1j * imag_part)
+        diffuse = real_part + 1j * imag_part
+        if self.channel_model == "rayleigh":
+            small_scale = diffuse
+        else:
+            wavelength = 3.0e8 / float(self.carrier_f)
+            los_phasor = torch.exp(
+                -1j * 2.0 * np.pi * safe_dist.to(diffuse.dtype) / wavelength
+            )
+            if self.channel_model == "pure_los":
+                small_scale = los_phasor
+            else:
+                k_linear = 10.0 ** (self.rician_k_db / 10.0)
+                small_scale = (
+                    np.sqrt(k_linear / (k_linear + 1.0)) * los_phasor
+                    + np.sqrt(1.0 / (k_linear + 1.0)) * diffuse
+                )
+        h = large_scale * small_scale
         h.fill_diagonal_(0)  # hii=0 so snr=0 no link avoid self transmission
         rx_power = self.tx_power * torch.abs(h) ** 2
         snr = rx_power / self.noise_power
@@ -238,6 +270,11 @@ class NetworkGenerator:
         else:
             link_queue_states = None
         self.queue_states = link_queue_states
+        queue_scale = (
+            max(float(link_queue_states.max().item()), 1.0)
+            if link_queue_states is not None and link_queue_states.numel() > 0
+            else 1.0
+        )
 
         # calculate vertex feature and edge weight
         for u_idx in range(num_links):
@@ -260,7 +297,7 @@ class NetworkGenerator:
             #   - include_queue_feature=False → [SNR_dB]                   (1维)
             if include_queue_feature and link_queue_states is not None:
                 queue_len = link_queue_states[u_idx].item()
-                queue_normalized = np.log1p(queue_len) / 10.0
+                queue_normalized = queue_len / queue_scale
                 vertex_feature.append(queue_normalized)
 
             vertex_features.append(vertex_feature)
@@ -649,7 +686,7 @@ if __name__ == '__main__':
     AREA_WIDTH = 1000  # 1km x 1km区域
     HEIGHT_RANGE = (50, 150)  # 高度范围50-150米
     MIN_DISTANCE = 20  # 最小安全距离20米
-    TX_POWER = 22   # tx power (dBm)
+    TX_POWER = 10   # tx power (dBm); canonical setting for current experiments
     NOISE_PSD = -174    # noise power spectral density (dBm)
     G_T = 0 # TX antenna gain (dBi)
     G_R = 0 # RX antenna gain (dBi)

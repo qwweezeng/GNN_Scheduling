@@ -33,7 +33,9 @@ Queue-aware Network Simulator - 队列感知仿真器
 
 import torch
 import numpy as np
+from collections import deque
 from .base import BaseSimulator
+from utils.queue_features import relative_queue_feature
 
 
 class QueueSimulator(BaseSimulator):
@@ -67,6 +69,19 @@ class QueueSimulator(BaseSimulator):
         # 外部预生成的到达过程；用于同一 Monte Carlo seed 内公平比较不同调度器
         self._arrival_realizations = None
 
+        # Optional FIFO packet accounting for actual delivered-packet delay.
+        # The fluid queue remains the source of truth for scheduling/service;
+        # each integer Poisson arrival is additionally tracked as one packet
+        # whose remaining service can be fractional across slots.
+        self.track_packet_delay = False
+        self.delay_deadline_slots = None
+        self.buffer_capacity_packets = None
+        self._packet_cohorts = None
+        self._delivered_packet_delays = []
+        self._delivered_packet_arrival_slots = []
+        self._pending_deadline_drop_counts = None
+        self._pending_deadline_drop_work = None
+
     def _sync_queue_features(self):
         """
         将仿真器中的真实动态队列同步到当前 NetworkState。
@@ -92,7 +107,7 @@ class QueueSimulator(BaseSimulator):
         if not self.include_queue_feature:
             return
 
-        queue_feature = torch.log1p(torch.clamp(q, min=0.0)) / 10.0
+        queue_feature = relative_queue_feature(q)
         queue_feature = queue_feature.to(state.vertex_features.device).unsqueeze(1)
 
         if state.vertex_features.size(1) == 1:
@@ -102,7 +117,8 @@ class QueueSimulator(BaseSimulator):
     
     def configure(self, arrival_lambda=0.5, 
                   slot_duration=0.001, packet_size=12000,
-                  slots_per_block=None):
+                  slots_per_block=None, track_packet_delay=False,
+                  delay_deadline_ms=None, buffer_size_mbit=None):
         """
         配置仿真器参数
         
@@ -113,11 +129,94 @@ class QueueSimulator(BaseSimulator):
             slots_per_block: 每个信道块的时隙数。
                            - None 或 0：整个仿真周期信道不变（默认）
                            - 正整数：每 N 个时隙更新一次信道
+            track_packet_delay: 是否额外进行 FIFO 包级完成时延记账。
+            delay_deadline_ms: 包从到达到完成所允许的最大时延（ms）。
+                超过该时限仍未完成的包会被丢弃；None 表示不设截止时间。
+            buffer_size_mbit: 每条链路发射队列的有限缓存大小（Mbit）。
+                新到达包超过容量时立即丢弃；None 表示无限缓存。
         """
         self.arrival_lambda = arrival_lambda
         self.slot_duration = slot_duration
         self.packet_size = packet_size
         self.slots_per_block = slots_per_block if slots_per_block and slots_per_block > 0 else None
+        self.track_packet_delay = bool(
+            track_packet_delay or delay_deadline_ms is not None
+        )
+        if delay_deadline_ms is None:
+            self.delay_deadline_slots = None
+        else:
+            self.delay_deadline_slots = max(
+                0,
+                int(round(float(delay_deadline_ms) / (slot_duration * 1000.0))),
+            )
+        self.buffer_capacity_packets = (
+            None if buffer_size_mbit is None else
+            float(buffer_size_mbit) * 1e6 / float(packet_size)
+        )
+
+    def _expire_packet_deadlines(self):
+        """Discard packets whose end-to-end queueing delay exceeds the deadline.
+
+        Expiration is evaluated before scheduling the current slot, so an
+        expired packet is neither included in Q(t) nor served in that slot.
+        A packet with age exactly equal to the deadline is still eligible for
+        service; it expires at the next slot if unfinished.
+        """
+        if self._packet_cohorts is None:
+            return
+        num_links = len(self._packet_cohorts)
+        counts = torch.zeros(num_links, dtype=torch.float32, device=self.device)
+        work = torch.zeros_like(counts)
+        if self.delay_deadline_slots is not None:
+            for link_idx, queue in enumerate(self._packet_cohorts):
+                while queue:
+                    arrival_slot, remaining = queue[0]
+                    if int(self.slot) - int(arrival_slot) <= self.delay_deadline_slots:
+                        break
+                    queue.popleft()
+                    counts[link_idx] += 1.0
+                    work[link_idx] += float(remaining)
+            if self.queue_states is not None:
+                self.queue_states = torch.clamp(
+                    self.queue_states - work, min=0.0
+                )
+                self._sync_queue_features()
+        self._pending_deadline_drop_counts = counts
+        self._pending_deadline_drop_work = work
+
+    def _update_packet_delay_tracking(self, departures, arrivals):
+        """Consume FIFO packet work and append new integer packet arrivals."""
+        if not self.track_packet_delay:
+            return
+
+        eps = 1e-8
+        departures = departures.detach().cpu().reshape(-1)
+        arrivals = arrivals.detach().cpu().reshape(-1)
+        for link_idx in (departures > eps).nonzero(as_tuple=True)[0].tolist():
+            service = float(departures[link_idx])
+            queue = self._packet_cohorts[link_idx]
+            while service > eps and queue:
+                packet = queue[0]
+                consumed = min(service, packet[1])
+                packet[1] -= consumed
+                service -= consumed
+                if packet[1] <= eps:
+                    queue.popleft()
+                    self._delivered_packet_delays.append(
+                        max(0, int(self.slot) - int(packet[0]))
+                    )
+                    if not hasattr(self, "_delivered_packet_arrival_slots"):
+                        self._delivered_packet_arrival_slots = []
+                    self._delivered_packet_arrival_slots.append(int(packet[0]))
+                else:
+                    break
+
+        for link_idx in (arrivals > 0).nonzero(as_tuple=True)[0].tolist():
+            count = int(round(float(arrivals[link_idx])))
+            for _ in range(count):
+                self._packet_cohorts[link_idx].append(
+                    [int(self.slot), 1.0]
+                )
     
     def _generate_channel(self, csi_mode="perfect", q_bits=8, queue_states=None):
         """
@@ -160,6 +259,23 @@ class QueueSimulator(BaseSimulator):
             edge_index = state.edge_index.to(device)
             edge_weights = state.edge_weights.to(device)
 
+            if hasattr(model, 'schedule_with_state'):
+                pi = model.schedule_with_state(state, self.queue_states).to(device)
+                alpha = None
+                from models.model import calculate_achievable_rate
+                rates = calculate_achievable_rate(pi, state, binary=True)
+                active_mask = (pi.squeeze(-1) > 0.5).float()
+                active_indices = (active_mask > 0.5).nonzero(
+                    as_tuple=True
+                )[0].cpu().tolist()
+                return {
+                    'pi': pi,
+                    'alpha': alpha,
+                    'rates': rates,
+                    'active_mask': active_mask,
+                    'active_indices': active_indices,
+                }
+
             # 非队列感知模型（GAT-base）只吃 SNR 特征，slice 掉队列维度
             # 队列感知模型（GAT）直接用 [SNR, queue_norm] 完整特征
             if not self.include_queue_feature and x.size(1) > 1:
@@ -169,15 +285,21 @@ class QueueSimulator(BaseSimulator):
             
             if hasattr(model, 'use_power_control') and model.use_power_control:
                 pi, alpha, _ = result
-                from models.model import calculate_achievable_rate
-                rates = calculate_achievable_rate(pi, state, binary=True, alpha=alpha)
             else:
                 pi, _ = result
                 alpha = None
-                from models.model import calculate_achievable_rate
-                rates = calculate_achievable_rate(pi, state, binary=True)
-            
-            active_mask = (pi.squeeze(-1) > 0.5).float()
+
+            if self.include_queue_feature:
+                nonempty = (self.queue_states > 0).to(pi.device).unsqueeze(1)
+                pi = pi * nonempty.to(pi.dtype)
+            threshold = float(getattr(model, 'decision_threshold', 0.5))
+            pi = (pi > threshold).to(pi.dtype)
+            from models.model import calculate_achievable_rate
+            rates = calculate_achievable_rate(
+                pi, state, binary=False, alpha=alpha
+            )
+
+            active_mask = pi.squeeze(-1).float()
             active_indices = (active_mask > 0.5).nonzero(as_tuple=True)[0].cpu().tolist()
             
             return {
@@ -238,27 +360,74 @@ class QueueSimulator(BaseSimulator):
         active_mask = schedule_result['active_mask'].squeeze(-1).to(device)  # [num_links], on device
         departures_computed = active_mask * link_rates * bandwidth * self.slot_duration / self.packet_size
 
-        # 生成到达：默认独立泊松采样；公平比较时可来自共享 arrival trace。
-        arrivals = self._generate_arrivals()  # [num_links]
+        # 生成业务请求：默认独立泊松采样；公平比较时来自共享 trace。
+        # offered_arrivals 是外部提出的全部到达，admitted_arrivals 才进入有限缓存。
+        offered_arrivals = self._generate_arrivals()  # [num_links]
+
+        # MWS 权重使用调度决策时的 Q(t)，而不是更新后的 Q(t+1)。
+        queue_before_service = self.queue_states.clone()
 
         # 实际发送量受限于当前队列长度（都在 self.device 上）
-        departures_actual = torch.min(self.queue_states, departures_computed)
+        departures_actual = torch.min(queue_before_service, departures_computed)
+
+        queue_after_service = torch.clamp(
+            self.queue_states - departures_actual, min=0.0
+        )
+        if self.buffer_capacity_packets is None:
+            admitted_arrivals = offered_arrivals.to(device)
+        else:
+            available = torch.clamp(
+                torch.floor(
+                    self.buffer_capacity_packets - queue_after_service + 1e-8
+                ),
+                min=0.0,
+            )
+            admitted_arrivals = torch.minimum(
+                offered_arrivals.to(device), available
+            )
+        overflow_drops = offered_arrivals.to(device) - admitted_arrivals
+
+        # FIFO accounting sees exactly the same service and admitted arrivals
+        # as the fluid queue. Arrivals occur after service and are first
+        # eligible in the next slot.
+        self._update_packet_delay_tracking(
+            departures_actual, admitted_arrivals
+        )
 
         # 队列更新
-        self.queue_states = torch.clamp(
-            self.queue_states - departures_actual,
-            min=0.0
-        ) + arrivals.to(device)
+        self.queue_states = queue_after_service + admitted_arrivals
 
         # 加权效用（都在 CPU 上计算用于记录）
         R_eff = link_rates.cpu() * bandwidth * self.slot_duration / self.packet_size
-        utility = torch.sum(self.queue_states.cpu() * R_eff).item()
+        utility = torch.sum(queue_before_service.cpu() * R_eff).item()
 
         # 记录历史：用 departures_actual（实际发送量），而非 Shannon 容量
         self.history['queue_lengths'].append(self.queue_states.cpu().clone())
-        self.history['arrivals'].append(arrivals.clone())
+        self.history['arrivals'].append(offered_arrivals.clone())
+        self.history['admitted_arrivals'].append(
+            admitted_arrivals.detach().cpu().clone()
+        )
+        self.history['overflow_drop_counts'].append(
+            overflow_drops.detach().cpu().clone()
+        )
+        deadline_counts = self._pending_deadline_drop_counts
+        if deadline_counts is None:
+            deadline_counts = torch.zeros_like(offered_arrivals, device=device)
+        self.history['deadline_drop_counts'].append(
+            deadline_counts.detach().cpu().clone()
+        )
         self.history['departures'].append(departures_actual.detach().cpu().clone())
         self.history['active_links'].append(schedule_result['active_indices'])
+        nonempty_mask = queue_before_service > 0
+        self.history['nonempty_link_counts'].append(
+            int(nonempty_mask.sum().item())
+        )
+        self.history['active_nonempty_counts'].append(
+            int(((active_mask > 0) & nonempty_mask).sum().item())
+        )
+        self.history['active_empty_counts'].append(
+            int(((active_mask > 0) & ~nonempty_mask).sum().item())
+        )
         self.history['rates'].append(link_rates.detach().cpu().clone())
         self.history['utilities'].append(utility)
         
@@ -314,6 +483,13 @@ class QueueSimulator(BaseSimulator):
         
         # 初始化队列（全零）
         self.queue_states = torch.zeros(self.current_state.num_vertices, device=self.device)
+        self._packet_cohorts = [
+            deque() for _ in range(self.current_state.num_vertices)
+        ]
+        self._delivered_packet_delays = []
+        self._delivered_packet_arrival_slots = []
+        self._pending_deadline_drop_counts = None
+        self._pending_deadline_drop_work = None
         self._sync_queue_features()
 
         if arrival_realizations is not None:
@@ -364,6 +540,9 @@ class QueueSimulator(BaseSimulator):
                 if verbose:
                     print(f"  [t={t}] Channel updated (block boundary)")
             
+            # 在本时隙调度前移除已经超过 QoS 截止时间的包。
+            self._expire_packet_deadlines()
+
             # 执行一个时隙
             result = self.step()
             
@@ -400,7 +579,14 @@ class QueueSimulator(BaseSimulator):
         """
         queue_lengths = torch.stack(self.history['queue_lengths'])  # [num_slots, num_links]
         arrivals = torch.stack(self.history['arrivals'])
+        admitted_arrivals = torch.stack(self.history['admitted_arrivals'])
         departures = torch.stack(self.history['departures'])
+        deadline_drop_counts = torch.stack(
+            self.history['deadline_drop_counts']
+        )
+        overflow_drop_counts = torch.stack(
+            self.history['overflow_drop_counts']
+        )
         
         num_slots = queue_lengths.size(0)
         
@@ -430,6 +616,29 @@ class QueueSimulator(BaseSimulator):
             average_delay_slots * self.slot_duration * 1000.0
             if average_delay_slots is not None else None
         )
+        if self._delivered_packet_delays:
+            delivered_delays = np.asarray(
+                self._delivered_packet_delays, dtype=float
+            )
+            packet_delay_count = int(delivered_delays.size)
+            average_packet_delay_slots = float(delivered_delays.mean())
+            p95_packet_delay_slots = float(np.percentile(
+                delivered_delays, 95
+            ))
+            average_packet_delay_ms = (
+                average_packet_delay_slots
+                * self.slot_duration * 1000.0
+            )
+            p95_packet_delay_ms = (
+                p95_packet_delay_slots
+                * self.slot_duration * 1000.0
+            )
+        else:
+            packet_delay_count = 0
+            average_packet_delay_slots = None
+            p95_packet_delay_slots = None
+            average_packet_delay_ms = None
+            p95_packet_delay_ms = None
 
         # 吞吐量轨迹（cumulative throughput ratio 随时隙变化）
         cumulative_departures = departures.cumsum(dim=0)  # [num_slots, num_links]
@@ -440,6 +649,82 @@ class QueueSimulator(BaseSimulator):
         # 每时隙总到达/发送量（packets）
         arrivals_per_slot = arrivals.sum(dim=1).cpu().numpy()
         departures_per_slot = departures.sum(dim=1).cpu().numpy()
+        active_links_per_slot = np.asarray([
+            len(indices) for indices in self.history['active_links']
+        ], dtype=float)
+        nonempty_links_per_slot = np.asarray(
+            self.history['nonempty_link_counts'], dtype=float
+        )
+        active_nonempty_per_slot = np.asarray(
+            self.history['active_nonempty_counts'], dtype=float
+        )
+        active_empty_per_slot = np.asarray(
+            self.history['active_empty_counts'], dtype=float
+        )
+        nonempty_activation_trajectory = np.divide(
+            active_nonempty_per_slot,
+            nonempty_links_per_slot,
+            out=np.zeros_like(active_nonempty_per_slot),
+            where=nonempty_links_per_slot > 0,
+        )
+        total_arrivals = arrivals.sum().item()
+        total_admitted_arrivals = admitted_arrivals.sum().item()
+        total_departures = departures.sum().item()
+        throughput_ratio = total_departures / total_arrivals if total_arrivals > 0 else 0.0
+        queue_growth_slope = self._queue_growth_slope(queue_lengths)
+        deadline_dropped_packets = int(round(deadline_drop_counts.sum().item()))
+        overflow_dropped_packets = int(round(overflow_drop_counts.sum().item()))
+        delivered_packet_count = len(self._delivered_packet_delays)
+        successful_packet_total_rate_pps = (
+            delivered_packet_count / num_slots if num_slots > 0 else 0.0
+        )
+        successful_delivery_ratio = (
+            delivered_packet_count / total_arrivals
+            if total_arrivals > 0 else 1.0
+        )
+        unfinished_packet_count = (
+            sum(len(queue) for queue in self._packet_cohorts)
+            if self._packet_cohorts is not None else 0
+        )
+        packet_loss_rate = (
+            (deadline_dropped_packets + overflow_dropped_packets)
+            / total_arrivals if total_arrivals > 0 else 0.0
+        )
+        unfinished_packet_fraction = (
+            unfinished_packet_count / total_arrivals
+            if total_arrivals > 0 else 0.0
+        )
+        resolved_packet_fraction = (
+            (delivered_packet_count + deadline_dropped_packets
+             + overflow_dropped_packets) / total_arrivals
+            if total_arrivals > 0 else 1.0
+        )
+
+        # Censoring-free QoS loss: only include arrivals old enough that they
+        # must have either completed or expired by the end of the run.
+        qos_eligible_arrivals = None
+        qos_eligible_delivered = None
+        qos_packet_loss_rate = None
+        if self.delay_deadline_slots is not None:
+            eligible_slots = max(
+                0, num_slots - self.delay_deadline_slots - 1
+            )
+            qos_eligible_arrivals = int(round(
+                arrivals[:eligible_slots].sum().item()
+            ))
+            qos_eligible_delivered = sum(
+                int(arrival_slot) < eligible_slots
+                for arrival_slot in self._delivered_packet_arrival_slots
+            )
+            if qos_eligible_arrivals > 0:
+                qos_packet_loss_rate = max(
+                    0.0,
+                    min(
+                        1.0,
+                        (qos_eligible_arrivals - qos_eligible_delivered)
+                        / qos_eligible_arrivals,
+                    ),
+                )
 
         metrics = {
             # 队列长度统计
@@ -455,17 +740,39 @@ class QueueSimulator(BaseSimulator):
             'average_total_queue_backlog_mbit': avg_total_queue_backlog * self.packet_size / 1e6,
             'average_delay_slots': average_delay_slots,
             'average_delay_ms': average_delay_ms,
+            'packet_delay_count': packet_delay_count,
+            'average_packet_delay_slots': average_packet_delay_slots,
+            'average_packet_delay_ms': average_packet_delay_ms,
+            'p95_packet_delay_slots': p95_packet_delay_slots,
+            'p95_packet_delay_ms': p95_packet_delay_ms,
+            'delivered_packet_count': delivered_packet_count,
+            'successful_packet_total_rate_pps': successful_packet_total_rate_pps,
+            'successful_delivery_ratio': successful_delivery_ratio,
+            'successful_goodput_mbps': (
+                successful_packet_total_rate_pps
+                * self.packet_size / self.slot_duration / 1e6
+            ),
+            'deadline_dropped_packets': deadline_dropped_packets,
+            'overflow_dropped_packets': overflow_dropped_packets,
+            'unfinished_packet_count': unfinished_packet_count,
+            'packet_loss_rate': packet_loss_rate,
+            'unfinished_packet_fraction': unfinished_packet_fraction,
+            'resolved_packet_fraction': resolved_packet_fraction,
+            'qos_eligible_arrivals': qos_eligible_arrivals,
+            'qos_eligible_delivered': qos_eligible_delivered,
+            'qos_packet_loss_rate': qos_packet_loss_rate,
 
             # 到达/发送统计
-            'total_arrivals': arrivals.sum().item(),
-            'total_departures': departures.sum().item(),
+            'total_arrivals': total_arrivals,
+            'total_admitted_arrivals': total_admitted_arrivals,
+            'total_departures': total_departures,
             'arrival_rate_pps': avg_arrival_rate_pps,
             'arrival_total_rate_pps': avg_total_arrival_rate_pps,
 
             # 归一化吞吐量（稳定性比）：departures / arrivals，无量纲，表示到达包中被成功发送的比例
             # - ≈1.0：系统稳定（到达率 ≤ 服务能力）
             # - <1.0：系统过载（队列会持续增长）
-            'throughput_ratio': (departures.sum() / arrivals.sum()).item() if arrivals.sum() > 0 else 0,
+            'throughput_ratio': throughput_ratio,
 
             # 实际数据吞吐量（Mbps）：真正的网络传输速率
             # 计算方式：total_packets × packet_size(bits) / total_time(s) / 1e6
@@ -476,6 +783,13 @@ class QueueSimulator(BaseSimulator):
             # 每链路的平均发送速率（packets/slot）
             'departure_rate_pps': avg_departure_rate_pps,
             'departure_total_rate_pps': avg_total_departure_rate_pps,
+            'average_active_links': float(active_links_per_slot.mean()),
+            'average_nonempty_links': float(nonempty_links_per_slot.mean()),
+            'nonempty_activation_rate': float(
+                nonempty_activation_trajectory.mean()
+            ),
+            'average_active_empty_links': float(active_empty_per_slot.mean()),
+            'average_mws_utility': float(np.mean(self.history['utilities'])),
 
             # 队列轨迹（用于绘图）
             'queue_trajectory': queue_lengths.cpu().numpy(),
@@ -489,6 +803,9 @@ class QueueSimulator(BaseSimulator):
             'throughput_trajectory': throughput_trajectory,
             'arrivals_per_slot': arrivals_per_slot,
             'departures_per_slot': departures_per_slot,
+            'active_links_per_slot': active_links_per_slot,
+            'nonempty_links_per_slot': nonempty_links_per_slot,
+            'nonempty_activation_trajectory': nonempty_activation_trajectory,
 
             # 效用轨迹：Σ Q_i × R_i × B × τ / L，单位是 packets/slot（与 Loss 一致）
             # 这是在仿真中追踪的"加权holtz-werk"值
@@ -498,25 +815,24 @@ class QueueSimulator(BaseSimulator):
             'queue_overflow_prob': (queue_lengths[-1] > 50).float().mean().item(),
 
             # 稳定性判断
-            'is_stable': self._check_stability(queue_lengths),
+            'queue_growth_slope': queue_growth_slope,
+            'is_stable': (
+                throughput_ratio >= 0.95 and queue_growth_slope <= 0.01
+            ),
         }
         
         return metrics
     
-    def _check_stability(self, queue_lengths, window=100):
-        """
-        判断队列是否稳定：检查最近 window 个时隙的平均队列是否增长
-        """
-        if queue_lengths.size(0) < window:
-            return None
-        
-        recent = queue_lengths[-window:]
-        mean_per_slot = recent.mean(dim=1)
-        
-        slope = (mean_per_slot[-1].item() - mean_per_slot[0].item()) / window
-        is_stable = abs(slope) < 0.5
-        
-        return is_stable
+    @staticmethod
+    def _queue_growth_slope(queue_lengths, window=100):
+        """Estimate recent per-link queue drift in packets/slot."""
+        window = min(int(window), queue_lengths.size(0))
+        if window < 2:
+            return 0.0
+        recent = queue_lengths[-window:].mean(dim=1).float()
+        time = torch.arange(window, dtype=recent.dtype, device=recent.device)
+        time = time - time.mean()
+        return float(torch.sum(time * (recent - recent.mean())) / torch.sum(time ** 2))
 
 
 def compare_scheduling_algorithms(net_gen, model, num_slots=5000,

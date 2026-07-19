@@ -1,0 +1,151 @@
+############################################################
+#  GNN-Scheduling 实验配置文件 (configs/exp_example.yaml)    #
+#                                                        #
+#  【设计原则】                                           #
+#  此文件包含"基础仿真"的全部参数。                       #
+#  任何复杂功能（队列感知、功率控制）默认关闭，             #
+#  从而保证"开箱即用"——不加任何额外参数即可运行。         #
+#                                                        #
+#  【防呆设计】                                          #
+#  USE_QUEUE 和 NODE_RAW_DIM 必须联动，代码会自动检查      #
+#  （见 runner.py）。若不一致，会打印 ERROR 并终止。       #
+#                                                        #
+#  【参数联动速查表】                                    #
+#  ┌────────────┬──────────────┬───────────┬──────────────┐#
+#  │ USE_QUEUE │ NODE_RAW_DIM │ 特征维度  │   Loss 类型  │#
+#  ├────────────┼──────────────┼───────────┼──────────────┤#
+#  │ false(默认)│ 1           │ [SNR]    │ -Σ R_i       │#
+#  │ true      │ 2           │ [SNR,Q]  │ -Σ(Q_i × R_i)│#
+#  └────────────┴──────────────┴───────────┴──────────────┘#
+#                                                        #
+#  【运行实验的正确方式】                                 #
+#  1. 基础吞吐量实验（默认 USE_QUEUE=false）：            #
+#         uv run python bin/run_experiment.py              #
+#              --config configs/exp_example.yaml --seed 42#
+#                                                        #
+#  2. 队列感知实验（必须 USE_QUEUE=true）：               #
+#         uv run python experiments/run_queue_experiment.py#
+#              --use_queue --num_uav 30 --seed 42        #
+#                                                        #
+#  3. 功率控制实验（USE_POWER_CONTROL=true）：            #
+#         uv run python experiments/power_control_experiment.py#
+#                                                        #
+#  ⚠️ 不要在基础 YAML 中启用队列/功率控制，               #
+#     而是通过对应的实验脚本 + CLI 参数来运行。            #
+#                                                        #
+############################################################
+
+
+# ========== Network / scenario parameters ==========
+NUM_UAV: 10
+AREA_WIDTH: 1000
+HEIGHT_RANGE: [50, 150]
+MIN_DISTANCE: 20
+TX_POWER: 10
+G_T: 0
+G_R: 0
+
+# ========== Wireless communication parameters ==========
+BANDWIDTH: !!float 5e6
+CARRIER_FREQ: !!float 2.4e9
+NOISE_PSD: -169
+SNR_GAP_DB: 0
+SNR_THRES: 5
+
+# ========== CSI mode ==========
+# CSI_MODE 统一控制：模型输入特征 + 速率计算
+#   perfect    : 完美CSI，含小尺度衰落（默认）
+#   large_scale: 仅大尺度衰落（路径损耗），无小尺度随机性
+#   quantized  : 量化距离近似（大尺度 + 量化误差）
+CSI_MODE: "perfect"
+Q_BITS: 8
+
+# ========== Model architecture ==========
+# 【联动参数】NODE_RAW_DIM 必须与 USE_QUEUE 保持一致：
+#   USE_QUEUE=false → NODE_RAW_DIM=1（仅 SNR）
+#   USE_QUEUE=true  → NODE_RAW_DIM=2（SNR + queue_normalized）
+# 代码会自动检查不一致并报错。
+NODE_RAW_DIM: 1
+
+MLP_HIDDEN_DIMS: [32, 32]
+NODE_EMBED_DIM: 32
+EDGE_DIM: 1
+NUM_HEADS: 4
+GAT_OUT_DIM: 48
+NUM_GAT_LAYERS: 4
+SCHEDULE_HIDDEN: 32
+
+# ========== Power control ==========
+# ⚠️ 启用功率控制请使用 experiments/power_control_experiment.py
+#    此文件为基础配置，不在基础 YAML 中启用
+USE_POWER_CONTROL: false
+POWER_HIDDEN_DIM: 16
+
+# ========== Queue simulation parameters ==========
+# 【联动参数】USE_QUEUE 必须与 NODE_RAW_DIM 联动：
+#   USE_QUEUE=false → NODE_RAW_DIM=1 → loss=-Σ R_i（纯吞吐量最大化）
+#   USE_QUEUE=true  → NODE_RAW_DIM=2 → loss=-Σ(Q_i×R_i)（MWS加权）
+# ⚠️ 启用队列实验请使用 experiments/run_queue_experiment.py --use_queue
+#    此文件为基础配置，USE_QUEUE 保持 false
+USE_QUEUE: false
+ARRIVAL_LAMBDA: 0.5
+SLOT_DURATION: 0.001
+PACKET_SIZE: 12000
+
+# ========== Training / scheduler / clipping ==========
+LR: 0.0001
+EPOCHS: 30
+BATCH_SIZE: 1
+
+LR_SCHEDULER_TYPE: "ReduceLROnPlateau"
+LR_SCHEDULER_CONFIG:
+  mode: "max"
+  factor: 0.5
+  patience: 10
+  min_lr: 0.00001
+
+GRAD_CLIP_CONFIG:
+  explosion_threshold: 100
+  explosion_clip: 10.0
+  normal_clip: 5.0
+
+# ========== Dataset ==========
+TRAIN_SIZE: 500
+VAL_SIZE: 128
+TEST_SIZE: 128
+# 【重要】数据集按 NUM_UAV 分离缓存，修改 NUM_UAV 后会自动生成新数据集
+DATASET_CACHE_PATH: './datasets/dataset_numUAV=10.pkl'
+GEN_BATCH_SIZE: 50
+
+# ========== Evaluation ==========
+EVAL_INTERVAL: 1
+CONFLICT_WARMUP: 10
+EVAL_METRICS: ["sum_rate"]
+EVAL_BASELINES: false
+BASELINE_SPATIALDL: true
+BASELINE_FPLINQ: true
+BASELINE_GREEDY: true
+BASELINE_PARAMS:
+  spatial_n_links_pad: 50
+  use_fading_in_baselines: true
+
+# ========== Runtime / logging ==========
+RESULTS_DIR: "./results"
+LOG_DIR: "./logs"
+SAVE_MODEL: true
+
+# ========== Reproducibility ==========
+SEED: 10086
+
+# ========== Regularization ==========
+DROPOUT: 0.0
+ACTIVATION: "relu"
+
+# ========== Experiment metadata ==========
+EXPERIMENT_GROUP: "base"
+EXCEL_SHEET: "Sheet1"
+NOTES: "baseline experiment"
+
+# ========== Device ==========
+DEVICE: "auto"
+GPU_ID: 0

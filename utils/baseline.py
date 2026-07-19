@@ -39,7 +39,7 @@ try:
     SPATIAL_DL_AVAILABLE = True
 except ImportError:
     SPATIAL_DL_AVAILABLE = False
-    print("[baseline] Warning: Spatial DL dependencies not available, using fallbacks")
+    print("[baseline] Warning: Spatial DL/FPLinQ dependencies are unavailable")
 
 # Import our own network generator for consistency
 from utils.network_generate import NetworkState
@@ -50,7 +50,7 @@ def prune_state(state, keep_indices):
     and remaps link indices in edge_index / neighbor_map accordingly.
     """
     import numpy as np
-    from network_generate import NetworkState
+    from utils.network_generate import NetworkState
     keep_indices = np.array(keep_indices, dtype=np.int64)
     mapping = {int(old): int(new) for new, old in enumerate(keep_indices)}
 
@@ -114,7 +114,7 @@ def build_power_gain_matrix(state, use_fading=True):
     if hasattr(state, 'tx_power') and state.tx_power is not None:
         tx_power = state.tx_power
     else:
-        # 默认值：10 dBm = 0.158 W
+        # 默认值：10 dBm = 0.01 W
         tx_power = 10**(10/10) * 1e-3
     
     power_gain = torch.zeros(num_links, num_links, device=state.signal_power.device)
@@ -185,8 +185,10 @@ def eval_fplinq(states, use_fading=True):
     - 这确保与我们方法的参数一致
     """
     if not SPATIAL_DL_AVAILABLE:
-        # Fallback if FPLinQ dependencies not available
-        return [0.0] * len(states)
+        raise RuntimeError(
+            "FPLinQ dependencies are unavailable. Paper experiments never "
+            "replace a missing baseline with zeros or another algorithm."
+        )
 
     general_para = general_parameters.parameters()
     sum_rates = []
@@ -220,8 +222,10 @@ def eval_greedy_spatial(states):
     - 直接速率计算也使用带宽
     """
     if not SPATIAL_DL_AVAILABLE:
-        # Fallback to simple_greedy if Spatial DL not available
-        return [0.0] * len(states)
+        raise RuntimeError(
+            "Spatial-DL dependencies are unavailable. Install its retained "
+            "environment before selecting this baseline."
+        )
 
     gp = general_parameters.parameters()
     sum_rates = []
@@ -491,40 +495,22 @@ def eval_baseline(dataset, baseline_names=None):
             elif base_name == 'simple_greedy':
                 pi = simple_greedy(state, **config)
             elif base_name == 'local_greedy':
-                try:
-                    interference_threshold = config.get('interference_threshold', 1.0)
-                    sr = eval_local_greedy([state], interference_threshold=interference_threshold)[0]
-                    total_util += sr
-                    continue
-                except Exception as e:
-                    print(f"[baseline] Local Greedy failed: {e}, using simple_greedy fallback")
-                    pi = simple_greedy(state, k_ratio=0.2)
+                interference_threshold = config.get('interference_threshold', 1.0)
+                sr = eval_local_greedy([state], interference_threshold=interference_threshold)[0]
+                total_util += sr
+                continue
             elif base_name == 'spatial_dl':
-                # spatial dl expects batch processing; handle single-sample fallback
-                try:
-                    sr = eval_spatial_dl([state])[0]
-                    total_util += sr
-                    continue
-                except Exception as e:
-                    print(f"[baseline] Spatial DL failed: {e}, using simple_greedy fallback")
-                    pi = simple_greedy(state, k_ratio=0.2)
+                sr = eval_spatial_dl([state])[0]
+                total_util += sr
+                continue
             elif base_name == 'greedy_spatial':
-                # greedy variant that mirrors Spatial DL greedy selection (uses full gain matrix)
-                try:
-                    sr = eval_greedy_spatial([state])[0]
-                    total_util += sr
-                    continue
-                except Exception as e:
-                    print(f"[baseline] Greedy Spatial failed: {e}, using simple_greedy fallback")
-                    pi = simple_greedy(state, k_ratio=0.2)
+                sr = eval_greedy_spatial([state])[0]
+                total_util += sr
+                continue
             elif base_name == 'fplinq':
-                try:
-                    sr = eval_fplinq([state])[0]
-                    total_util += sr
-                    continue
-                except Exception as e:
-                    print(f"[baseline] FPLinQ failed: {e}, using simple_greedy fallback")
-                    pi = simple_greedy(state, k_ratio=0.2)
+                sr = eval_fplinq([state])[0]
+                total_util += sr
+                continue
             else:
                 continue
 
