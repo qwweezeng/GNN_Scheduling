@@ -1,20 +1,15 @@
-# 投稿实验入口
+# 当前实验底层运行器
 
-本目录只保留能直接对应论文图或必要审计的实验。
+本目录不再保存模型探索、GAT 结构搜索或历史结果。投稿图的实际入口是 `paper_figures/figXX_*/run.py`；这些脚本只调用下列底层运行器：
 
-| 脚本 | 对应内容 |
-|---|---|
-| `compare_gat_vs_spatial_dl.py` | 满缓存Channel-GAT与baseline |
-| `convergence_analysis.py` | GAT收敛和训练样本量 |
-| `scaling_experiment.py` | GAT跨UAV规模泛化 |
-| `csi_imperfection_study.py` | 满缓存CSI表示敏感性 |
-| `compare_marginal_mp_vs_lgs.py` | 相同$(Q,H)$快照的机制对比 |
-| `exp_fixed_csi_qos.py` | 固定CSI动态队列；正式任务需显式选择GAT-assisted主方案和Direct-Link消融 |
-| `evaluate_mobile_block_fading_csi.py` | 当前仍是Direct-Link移动CSI入口；待扩展为两种初始化×四种CSI，CG可选 |
-| `runner.py` | 会议实验兼容runner，不是单独论文方法 |
+| 脚本 | 作用 | 对应图 |
+|---|---|---|
+| `compare_gat_vs_spatial_dl.py` | 满缓存 Proposed-GAT 与外部/传统 baseline | Fig. 1 |
+| `evaluate_channel_gat_cross_n.py` | Proposed-GAT train-N/test-N 互测 | Fig. 6 |
+| `evaluate_channel_gat_csi.py` | 静态 CSI 反馈下的 Proposed-GAT | Fig. 7a |
+| `exp_fixed_csi_qos.py` | 固定 Rician CSI 下的 GAT-MP、baseline 动态队列 | Fig. 5 |
+| `evaluate_mobile_block_fading_csi.py` | 移动 block-fading 下的 GAT-MP | Fig. 7b、Fig. 8 |
 
-已停止的模型探测不在活动目录中。源码归档位于`archives/`，旧结果入口位于
-`experiments/archive/`或`docs/archive/`。
+命名规则：代码内部 `GAT-Assisted MarginalMP` 显示为 **GAT-MP**；`Direct-Link MarginalMP` 显示为 **Direct-MP**；`GATScheduler` 显示为 **Proposed-GAT**。任何新脚本应沿用这一映射。
 
-完整设置、baseline依赖和正式接口对齐闸门见`docs/EXPERIMENTS.md`。在该文档第8节完成前，
-不要把移动脚本的旧默认输出当作投稿版GAT-assisted结果。
+不要直接在此目录添加新模型。若需要最小成本诊断，应先修改 `paper_figures` 的 Gate 0 参数，并记录配置、checkpoint、fingerprint 与 seed。

@@ -319,8 +319,11 @@ class Trainer:
         for epoch in range(num_epochs):
             model.train()
             random.shuffle(train_dataset)
-            losses, utilities, pi_means, pi_stds, grad_norms, alpha_means = (
-                [] for _ in range(6)
+            (
+                losses, utilities, pi_means, pi_stds, binary_active_fractions,
+                grad_norms, alpha_means,
+            ) = (
+                [] for _ in range(7)
             )
 
             for state in train_dataset:
@@ -371,6 +374,7 @@ class Trainer:
                 utilities.append(utility.item())
                 pi_means.append(pi.mean().item())
                 pi_stds.append(pi.std().item())
+                binary_active_fractions.append((pi >= 0.5).float().mean().item())
                 grad_norms.append(grad_norm.item())
 
             means = {
@@ -378,6 +382,10 @@ class Trainer:
                 "utility": float(np.mean(utilities)) if utilities else 0.0,
                 "pi_mean": float(np.mean(pi_means)) if pi_means else 0.0,
                 "pi_std": float(np.mean(pi_stds)) if pi_stds else 0.0,
+                "binary_active_fraction": (
+                    float(np.mean(binary_active_fractions))
+                    if binary_active_fractions else 0.0
+                ),
                 "grad_norm_mean": float(np.mean(grad_norms)) if grad_norms else 0.0,
                 "grad_norm_max": float(np.max(grad_norms)) if grad_norms else 0.0,
                 "alpha_mean": float(np.mean(alpha_means)) if alpha_means else None,

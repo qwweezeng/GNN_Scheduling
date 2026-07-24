@@ -210,7 +210,14 @@ class QueueChannelLocalMaxScheduler:
 
     def schedule_with_state(self, state, queues):
         queues = torch.as_tensor(queues, dtype=torch.float32).reshape(-1)
-        device = queues.device
+        if self.channel_model is not None:
+            try:
+                device = next(self.channel_model.parameters()).device
+            except (AttributeError, StopIteration):
+                device = queues.device
+        else:
+            device = queues.device
+        queues = queues.to(device)
         edge_index = state.edge_index.to(device)
         priority = queues * self._expected_rate(state, device)
 

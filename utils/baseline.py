@@ -6,6 +6,13 @@ from collections import defaultdict
 from models.model import calculate_achievable_rate
 import os
 import sys
+from types import SimpleNamespace
+
+from baseline.fplinq_numpy import binarize_fplinq, optimize_fplinq
+from baseline.spatial_dl_adapter import (
+    project_3d_links_to_spatial_dl,
+    run_spatial_dl_checkpoint_isolated,
+)
 
 # ========== 完整的 TensorFlow/CUDA 日志抑制 ==========
 # 1. 抑制 TF_CPP 日志 (GPU 设备信息等)
@@ -29,17 +36,6 @@ logging.getLogger('tensorflow.python').setLevel(logging.ERROR)
 SPATIAL_DL_ROOT = os.path.join(os.path.dirname(__file__), "..", "baseline", "Spatial_Deep_Learning_for_Wireless_Scheduling-master")
 sys.path.append(os.path.join(SPATIAL_DL_ROOT, "Neural_Network_Model"))
 sys.path.append(os.path.join(SPATIAL_DL_ROOT, "Utilities"))
-
-# Try to import Spatial DL dependencies
-try:
-    import Deep_Learning_Scheduling  # type: ignore  # noqa: E402
-    import general_parameters        # type: ignore  # noqa: E402
-    import helper_functions          # type: ignore  # noqa: E402
-    import FPLinQ                    # type: ignore  # noqa: E402
-    SPATIAL_DL_AVAILABLE = True
-except ImportError:
-    SPATIAL_DL_AVAILABLE = False
-    print("[baseline] Warning: Spatial DL/FPLinQ dependencies are unavailable")
 
 # Import our own network generator for consistency
 from utils.network_generate import NetworkState
@@ -104,8 +100,10 @@ def prune_state(state, keep_indices):
 
 def build_power_gain_matrix(state, use_fading=True):
     """
-    Build power gain matrix |h|^2 for FPLinQ/Greedy baselines.
-    Returns power_gain [num_links,num_links] and tx_power scalar.
+    Build received-power matrix for numerical baselines.
+
+    Entry ``[receiver_link, transmitter_link]`` is already ``P|h|^2``.  The
+    returned matrix must never be multiplied by transmit power again.
     """
     num_links = state.links.size(0)
     links = state.links.cpu().numpy()
@@ -176,7 +174,27 @@ def compute_sum_rate_from_allocs(allocs, power_gain, noise_power, snr_gap=1.0):
     rates = np.log2(1 + SINR / snr_gap)
     return rates.sum(axis=1)
 
-def eval_fplinq(states, use_fading=True):
+def fplinq_schedule(state, use_fading=True, iterations=100):
+    """Return FPLinQ's binary action and continuous allocation scores."""
+    if not np.isclose(float(getattr(state, "snr_gap", 1.0)), 1.0):
+        raise ValueError("FPLinQ is validated only for the paper's 0 dB SNR gap")
+    power_gain, _ = build_power_gain_matrix(state, use_fading=use_fading)
+    power_gain = power_gain.cpu().numpy()
+    num_links = int(state.links.size(0))
+    allocation = optimize_fplinq(
+        power_gain,
+        float(state.noise_power),
+        np.ones(num_links, dtype=np.float64),
+        iterations=int(iterations),
+    )
+    schedule = binarize_fplinq(allocation)
+    return (
+        torch.tensor(schedule[:, None], dtype=torch.float32),
+        np.asarray(allocation, dtype=np.float64),
+    )
+
+
+def eval_fplinq(states, use_fading=True, *, iterations=100, return_actions=False):
     """
     Run FPLinQ on full link set (no pruning). Returns list of sum-rates.
     
@@ -184,32 +202,16 @@ def eval_fplinq(states, use_fading=True):
     - bandwidth 和 snr_gap 从 state 读取，而不是从 general_para 读取
     - 这确保与我们方法的参数一致
     """
-    if not SPATIAL_DL_AVAILABLE:
-        raise RuntimeError(
-            "FPLinQ dependencies are unavailable. Paper experiments never "
-            "replace a missing baseline with zeros or another algorithm."
-        )
-
-    general_para = general_parameters.parameters()
     sum_rates = []
+    actions = []
     for state in states:
-        power_gain, tx_power = build_power_gain_matrix(state, use_fading=use_fading)
-        power_gain = power_gain.cpu().numpy()
-        num_links = int(state.links.size(0))
-        gains = power_gain[None, :, :]
-        weights = np.ones((1, num_links))
-        try:
-            FP_allocs = FPLinQ.FP_optimize(general_para, gains, weights)
-        except TypeError:
-            FP_allocs = FPLinQ.FP_optimize(gains, weights)
-        FP_sched = (np.sqrt(FP_allocs) > 0.5).astype(np.float32)[0, :num_links]
-        
-        # ✅ 使用我们的 calculate_achievable_rate 函数，确保速率计算一致
-        # 将 numpy 数组转换为 PyTorch tensor
-        pi_tensor = torch.tensor(FP_sched[:, None], dtype=torch.float32)
+        pi_tensor, _ = fplinq_schedule(
+            state, use_fading=use_fading, iterations=iterations
+        )
         sr = calculate_achievable_rate(pi_tensor, state, binary=True).sum().item()
         sum_rates.append(sr)
-    return sum_rates
+        actions.append(pi_tensor)
+    return (sum_rates, actions) if return_actions else sum_rates
 
 
 def eval_greedy_spatial(states):
@@ -221,13 +223,6 @@ def eval_greedy_spatial(states):
     - bandwidth 和 snr_gap 从 state 读取
     - 直接速率计算也使用带宽
     """
-    if not SPATIAL_DL_AVAILABLE:
-        raise RuntimeError(
-            "Spatial-DL dependencies are unavailable. Install its retained "
-            "environment before selecting this baseline."
-        )
-
-    gp = general_parameters.parameters()
     sum_rates = []
     for state in states:
         power_gain, tx_power = build_power_gain_matrix(state, use_fading=True)
@@ -284,88 +279,155 @@ def eval_local_greedy(states, interference_threshold=1.0):
     return sum_rates
 
 
-def build_layouts_from_states(states, general_para):
+def build_layouts_from_states(
+    states,
+    general_para,
+    common_subproblem_indices=None,
+    *,
+    return_mappings=False,
+):
     """
     Build layouts tensor (batch, N_pad, 4) expected by Spatial DL.
-    - Project 3D positions to 2D (x, y); ignore height for minimal change.
-    - If num_links > N_pad, keep top-N_pad links by SNR to avoid shape mismatch.
-    - To avoid conv filter index overflow, we rescale coordinates so that
-      max direct-link distance <= 150 m (31 cells * 5 m).
-    - Pad extra links with safe in-range coordinates (0,0).
+    No link is silently dropped. ``general_para.n_links`` is the within-batch
+    padding length, not a checkpoint restriction.
     """
-    N_pad = general_para.n_links  # baseline expects fixed N (e.g., 50)
+    N_pad = int(general_para.n_links)
+    if N_pad < 1:
+        raise ValueError("Spatial-DL padding length must be positive")
     layouts = np.zeros((len(states), N_pad, 4), dtype=np.float32)
+    masks = np.zeros((len(states), N_pad), dtype=np.float32)
     link_counts = []
     pruned_states = []
-    pad_val = 0.0  # keep padding inside grid to avoid OOB
+    mappings = []
+
+    if common_subproblem_indices is None:
+        common_sets = [None] * len(states)
+    elif len(states) == 1:
+        value = common_subproblem_indices
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 1
+            and (value[0] is None or np.asarray(value[0]).ndim > 0)
+        ):
+            common_sets = list(value)
+        else:
+            common_sets = [value]
+    else:
+        common_sets = list(common_subproblem_indices)
+        if len(common_sets) != len(states):
+            raise ValueError("one common-subproblem index set is required per state")
 
     for i, state in enumerate(states):
-        positions = state.positions.cpu().numpy()  # (num_uav, 3)
-        links = state.links.cpu().numpy()          # (num_links, 2)
-        num_links = links.shape[0]
+        layout, mask, mapping = project_3d_links_to_spatial_dl(
+            state.positions.detach().cpu().numpy(),
+            state.links.detach().cpu().numpy(),
+            common_subproblem_indices=common_sets[i],
+            target_link_count=N_pad,
+        )
+        layouts[i] = layout
+        masks[i] = mask
+        link_counts.append(int(mask.sum()))
+        full_indices = np.arange(int(state.links.size(0)), dtype=np.int64)
+        pruned_states.append(
+            state
+            if np.array_equal(mapping.selected_project_indices, full_indices)
+            else prune_state(state, mapping.selected_project_indices)
+        )
+        mappings.append(mapping)
 
-        # clip to N_pad if needed (select top SNR links)
-        keep_idx = np.arange(num_links)
-        if num_links > N_pad:
-            snr_db = state.vertex_features[:, 0].cpu().numpy()
-            keep_idx = np.argsort(-snr_db)[:N_pad]
-            links = links[keep_idx]
-            num_links = N_pad
-
-        link_counts.append(num_links)
-
-        # ----- coordinate scaling to keep pair offsets within conv filter -----
-        # baseline uses cell_length=5m and filter half-span ~31 cells => ~155m
-        max_direct_dist = 0.0
-        for (tx, rx) in links:
-            dx = positions[tx][0] - positions[rx][0]
-            dy = positions[tx][1] - positions[rx][1]
-            dist = (dx * dx + dy * dy) ** 0.5
-            if dist > max_direct_dist:
-                max_direct_dist = dist
-        scale = 1.0
-        if max_direct_dist > 1e-6 and max_direct_dist > 150.0:
-            scale = 150.0 / max_direct_dist  # shrink so max link ~150m
-        # ----------------------------------------------------------------------
-
-        # fill real links
-        for j, (tx, rx) in enumerate(links):
-            tx_pos = positions[tx][:2] * scale  # (x, y)
-            rx_pos = positions[rx][:2] * scale
-            layouts[i, j, 0:2] = tx_pos
-            layouts[i, j, 2:4] = rx_pos
-
-        # pad dummies far away (so their influence is minimal; outputs are ignored)
-        if num_links < N_pad:
-            layouts[i, num_links:, :] = pad_val
-
-        # store pruned state (aligned with keep_idx)
-        pruned_states.append(prune_state(state, keep_idx))
-
-    return layouts, link_counts, pruned_states
+    result = (layouts, masks, link_counts, pruned_states)
+    return result + (mappings,) if return_mappings else result
 
 
-def eval_spatial_dl(states):
+def eval_spatial_dl(
+    states,
+    *,
+    common_subproblem_indices=None,
+    seed=0,
+    batch_size=4,
+    return_actions=False,
+    return_metadata=False,
+):
     """
     Run Spatial DL baseline on a batch of states.
     Returns list of sum-rates (Mbps) computed with our rate function.
     """
-    if not SPATIAL_DL_AVAILABLE:
-        # Fallback to simple_greedy if Spatial DL not available
-        return [0.0] * len(states)
-
-    general_para = general_parameters.parameters()  # keep default n_links=50
-    layouts, link_counts, pruned_states = build_layouts_from_states(states, general_para)
-
-    # Run baseline model (TF1); outputs shape: (batch, N_pad)
-    schedules = Deep_Learning_Scheduling.sumRate_scheduling(general_para, layouts)
-
     sum_rates = []
-    for i, state in enumerate(pruned_states):
-        num_links = link_counts[i]
-        pi_hard = torch.tensor(schedules[i, :num_links], dtype=torch.float32).unsqueeze(-1)
-        rates = calculate_achievable_rate(pi_hard, state, binary=True, detach_hard=True)
-        sum_rates.append(rates.sum().item())
+    all_metadata = []
+    all_actions = []
+    batch_size = int(batch_size)
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    if common_subproblem_indices is None:
+        common_sets = [None] * len(states)
+    elif len(states) == 1:
+        value = common_subproblem_indices
+        if (
+            isinstance(value, (list, tuple))
+            and len(value) == 1
+            and (value[0] is None or np.asarray(value[0]).ndim > 0)
+        ):
+            common_sets = list(value)
+        else:
+            common_sets = [value]
+    else:
+        common_sets = list(common_subproblem_indices)
+        if len(common_sets) != len(states):
+            raise ValueError("one common-subproblem index set is required per state")
+
+    for start in range(0, len(states), batch_size):
+        state_batch = states[start:start + batch_size]
+        common_batch = common_sets[start:start + batch_size]
+        selected_counts = [
+            int(state.links.size(0)) if indices is None else len(indices)
+            for state, indices in zip(state_batch, common_batch)
+        ]
+        general_para = SimpleNamespace(n_links=max(1, max(selected_counts)))
+        layouts, masks, link_counts, pruned_states, mappings = build_layouts_from_states(
+            state_batch,
+            general_para,
+            common_batch,
+            return_mappings=True,
+        )
+        schedules = run_spatial_dl_checkpoint_isolated(
+            layouts,
+            masks,
+            source_root=SPATIAL_DL_ROOT,
+            seed=int(seed) + start,
+            conda_env=os.environ.get(
+                "SPATIAL_DL_CONDA_ENV", "gnn-spatial-dl-legacy"
+            ),
+        )
+        for i, state in enumerate(pruned_states):
+            num_links = link_counts[i]
+            pi_hard = torch.tensor(
+                schedules[i, :num_links], dtype=torch.float32
+            ).unsqueeze(-1)
+            rates = calculate_achievable_rate(
+                pi_hard, state, binary=True, detach_hard=True
+            )
+            sum_rates.append(rates.sum().item())
+            project_action = mappings[i].legacy_to_project(
+                schedules[i], omitted_value=0.0
+            )
+            all_actions.append(
+                torch.tensor(project_action[:, None], dtype=torch.float32)
+            )
+            item = mappings[i].metadata()
+            item.update({
+                "active_links": int(schedules[i, :num_links].sum()),
+                "active_fraction": float(
+                    schedules[i, :num_links].mean()
+                ) if num_links else 0.0,
+                "inference_seed": int(seed) + start,
+            })
+            all_metadata.append(item)
+    if return_actions and return_metadata:
+        return sum_rates, all_actions, all_metadata
+    if return_actions:
+        return sum_rates, all_actions
+    if return_metadata:
+        return sum_rates, all_metadata
     return sum_rates
 '''
 三种baseline：
@@ -455,15 +517,15 @@ def build_binary_conflict_graph(state, interference_threshold=0.3):
     edge_index = state.edge_index
     edge_weights = state.edge_weights
 
-    for i in range(edge_index.size(1)):
-        u = edge_index[0, i].item()
-        v = edge_index[1, i].item()
-        weight = edge_weights[i].item()
-
-        if weight > interference_threshold:
-            # 无向图，双向都标记
-            conflict_graph[u, v] = True
-            conflict_graph[v, u] = True
+    # Exact vectorization of the historical edge loop. This preserves the
+    # strict ``> threshold`` rule and undirected symmetrization while avoiding
+    # one Python ``.item()`` synchronization per graph edge.
+    strong = edge_weights.reshape(-1) > float(interference_threshold)
+    if strong.any():
+        u = edge_index[0, strong].long()
+        v = edge_index[1, strong].long()
+        conflict_graph[u, v] = True
+        conflict_graph[v, u] = True
 
     return conflict_graph
 

@@ -4,6 +4,7 @@ import torch
 
 from baseline.queue_schedulers import HardConflictLocalGreedyScheduler
 from models.marginal_mp import DirectLinkMarginalMP, exact_link_toggle_marginals
+from utils.feasibility import shared_uav_action_audit
 from utils.project_setup import build_network_generator, load_config
 from utils.scheduling_objective import mws_objective
 
@@ -49,6 +50,27 @@ class MarginalMPTest(unittest.TestCase):
         )
         self.assertEqual(
             len(diagnostics["physical_externality_pairs_per_round"]), executed
+        )
+        self.assertTrue(diagnostics["hard_feasibility_final"]["feasible"])
+
+    def test_scheduler_projects_conflicting_initializer(self):
+        state = _state(seed=654)
+        queues = torch.ones(state.num_vertices)
+
+        class AllLinksInitializer:
+            model_version = "all_links_test_initializer"
+
+            def schedule_with_state(self, state, queues):
+                return torch.ones((state.num_vertices, 1))
+
+        from models.marginal_mp import MarginalMPScheduler
+        scheduler = MarginalMPScheduler(AllLinksInitializer(), rounds=1)
+        action = scheduler.schedule_with_state(state, queues)
+        audit = shared_uav_action_audit(action, state.links)
+        self.assertTrue(audit["feasible"])
+        self.assertGreater(
+            len(scheduler.last_diagnostics["hard_feasibility_initial_candidate"]["violating_uavs"]),
+            0,
         )
 
     def test_hard_conflict_lgs_returns_independent_set(self):

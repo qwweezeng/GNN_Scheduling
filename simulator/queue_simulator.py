@@ -261,6 +261,12 @@ class QueueSimulator(BaseSimulator):
 
             if hasattr(model, 'schedule_with_state'):
                 pi = model.schedule_with_state(state, self.queue_states).to(device)
+                from utils.feasibility import project_shared_uav_feasible
+                pi, hard_feasibility = project_shared_uav_feasible(
+                    pi.detach().cpu(), state.links,
+                    priorities=state.vertex_features[:, 0].detach().cpu(),
+                )
+                pi = pi.to(device)
                 alpha = None
                 from models.model import calculate_achievable_rate
                 rates = calculate_achievable_rate(pi, state, binary=True)
@@ -274,6 +280,7 @@ class QueueSimulator(BaseSimulator):
                     'rates': rates,
                     'active_mask': active_mask,
                     'active_indices': active_indices,
+                    'hard_feasibility': hard_feasibility,
                 }
 
             # 非队列感知模型（GAT-base）只吃 SNR 特征，slice 掉队列维度
@@ -294,6 +301,12 @@ class QueueSimulator(BaseSimulator):
                 pi = pi * nonempty.to(pi.dtype)
             threshold = float(getattr(model, 'decision_threshold', 0.5))
             pi = (pi > threshold).to(pi.dtype)
+            from utils.feasibility import project_shared_uav_feasible
+            pi, hard_feasibility = project_shared_uav_feasible(
+                pi.detach().cpu(), state.links,
+                priorities=state.vertex_features[:, 0].detach().cpu(),
+            )
+            pi = pi.to(device)
             from models.model import calculate_achievable_rate
             rates = calculate_achievable_rate(
                 pi, state, binary=False, alpha=alpha
@@ -308,6 +321,7 @@ class QueueSimulator(BaseSimulator):
                 'rates': rates,
                 'active_mask': active_mask,
                 'active_indices': active_indices,
+                'hard_feasibility': hard_feasibility,
             }
     
     def _generate_arrivals(self):

@@ -22,6 +22,7 @@ from baseline.queue_schedulers import (
     RandomNonemptyScheduler,
     WeightedFPLinQScheduler,
 )
+from baseline.distgcn_adapter import DistGCNQueueScheduler
 from models.marginal_mp import (
     DirectLinkMarginalMP,
     GATAssistedMarginalMP,
@@ -29,6 +30,7 @@ from models.marginal_mp import (
 from models.initial_schedule_construction import (
     DirectLinkLocalMaxScheduler,
     DirectLinkJoinScheduler,
+    GATAssistedLocalMaxScheduler,
 )
 from utils.fixed_csi_benchmark import (
     add_hotspot_metrics,
@@ -47,7 +49,6 @@ from utils.project_setup import (
     physics_tag,
     queue_checkpoint_path,
 )
-from utils.plot_queue_benchmark import plot_result
 
 
 def comma_list(text, cast):
@@ -88,6 +89,10 @@ def method_factories(channel_model, queue_gat_model, include_mws, rounds):
             lambda seed: DirectLinkLocalMaxScheduler(),
             False,
         ),
+        "GAT-Assisted LocalMax": (
+            lambda seed: GATAssistedLocalMaxScheduler(channel_model),
+            False,
+        ),
         "Direct-Link Join": (
             lambda seed: DirectLinkJoinScheduler(),
             False,
@@ -98,6 +103,10 @@ def method_factories(channel_model, queue_gat_model, include_mws, rounds):
         ),
         "Weighted FPLinQ": (
             lambda seed: WeightedFPLinQScheduler(),
+            False,
+        ),
+        "DistGCN-LGS": (
+            lambda seed: DistGCNQueueScheduler(),
             False,
         ),
     }
@@ -166,7 +175,9 @@ def main():
     requested = (
         set(comma_list(args.methods, str)) if args.methods else set()
     )
-    needs_gat = "GAT-Assisted MarginalMP" in requested
+    needs_gat = bool(
+        {"GAT-Assisted MarginalMP", "GAT-Assisted LocalMax"}.intersection(requested)
+    )
     needs_queue_gat = "End-to-End GAT-Q" in requested
     if (
         needs_gat
@@ -216,7 +227,9 @@ def main():
         )
     else:
         queue_gat_model, queue_model_path = None, None
-    include_mws = (not args.skip_mws) and args.num_uav <= 20
+    # Centralized Greedy is retained at N=50 for the paper's like-for-like
+    # comparison. It is a greedy scheduler, not an exhaustive oracle.
+    include_mws = not args.skip_mws
     methods = method_factories(
         channel_model, queue_gat_model, include_mws, args.rounds
     )
@@ -368,9 +381,7 @@ def main():
     ) as file:
         json.dump(json_ready(per_seed), file, indent=2, ensure_ascii=False)
     np.savez_compressed(output_dir / "trajectories.npz", **trajectory_payload)
-    figure_dir = plot_result(output_dir)
     print(f"\nSaved formal benchmark inputs/results to {output_dir}")
-    print(f"Saved paper-ready figures to {figure_dir}")
 
 
 if __name__ == "__main__":

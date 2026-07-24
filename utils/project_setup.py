@@ -99,7 +99,13 @@ def build_gat_scheduler(
     )
 
 
-def load_channel_gat(config, train_num_uav=10, device="cpu"):
+def load_channel_gat(
+    config,
+    train_num_uav=10,
+    device="cpu",
+    *,
+    expected_dataset_fingerprint=None,
+):
     path = channel_checkpoint_path(config, train_num_uav)
     if not path.exists():
         raise FileNotFoundError(f"Channel-only GAT checkpoint not found: {path}")
@@ -123,6 +129,15 @@ def load_channel_gat(config, train_num_uav=10, device="cpu"):
     if mismatches or "model_state_dict" not in checkpoint:
         raise ValueError(
             f"Channel checkpoint metadata mismatch in {path}: {mismatches}"
+        )
+    if (
+        expected_dataset_fingerprint is not None
+        and checkpoint.get("dataset_fingerprint") != expected_dataset_fingerprint
+    ):
+        raise ValueError(
+            f"Channel checkpoint dataset fingerprint mismatch in {path}: "
+            f"{checkpoint.get('dataset_fingerprint')!r} != "
+            f"{expected_dataset_fingerprint!r}"
         )
     output_audit = checkpoint.get("output_audit", {})
     collapsed_all_active = (
@@ -153,6 +168,7 @@ def load_channel_gat_checkpoint(
     train_num_uav,
     device="cpu",
     allow_power_transfer=False,
+    expected_dataset_fingerprint=None,
 ):
     """Load an explicitly selected audited channel-only GAT checkpoint.
 
@@ -216,6 +232,15 @@ def load_channel_gat_checkpoint(
     if mismatches:
         raise ValueError(
             f"Channel checkpoint metadata mismatch in {path}: {mismatches}"
+        )
+    if (
+        expected_dataset_fingerprint is not None
+        and checkpoint.get("dataset_fingerprint") != expected_dataset_fingerprint
+    ):
+        raise ValueError(
+            f"Channel checkpoint dataset fingerprint mismatch in {path}: "
+            f"{checkpoint.get('dataset_fingerprint')!r} != "
+            f"{expected_dataset_fingerprint!r}"
         )
 
     output_audit = checkpoint.get("output_audit")

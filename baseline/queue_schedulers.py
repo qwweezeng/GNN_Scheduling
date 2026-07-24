@@ -7,7 +7,7 @@ module only contains small adapters and in-project reference algorithms.
 import torch
 import numpy as np
 
-from utils.scheduling_objective import mws_objective
+from baseline.fplinq_numpy import binarize_fplinq, optimize_fplinq
 
 
 class RandomNonemptyScheduler:
@@ -96,8 +96,8 @@ class HardConflictLocalGreedyScheduler:
         return scheduled.float().unsqueeze(1)
 
 
-def _link_gain_matrix(state):
-    """Return G[source link, affected receiver link] with zero diagonal."""
+def _observed_signal_power(state):
+    """Return the power matrix visible to the scheduler on CPU."""
     mode = getattr(state, "csi_mode", "perfect")
     if mode == "large_scale":
         signal_power = getattr(state, "signal_power_large_scale", None)
@@ -107,12 +107,18 @@ def _link_gain_matrix(state):
         signal_power = state.signal_power
     if signal_power is None:
         signal_power = state.signal_power
+    return signal_power.detach().cpu().float()
+
+
+def _link_gain_matrix(state):
+    """Return G[source link, affected receiver link] with zero diagonal."""
+    signal_power = _observed_signal_power(state)
     links = state.links.detach().cpu()
-    gain = signal_power.detach().cpu()[
+    gain = signal_power[
         links[:, 0, None], links[None, :, 1]
     ].clone()
     gain.fill_diagonal_(0.0)
-    direct = signal_power.detach().cpu()[links[:, 0], links[:, 1]]
+    direct = signal_power[links[:, 0], links[:, 1]]
     return gain.float(), direct.float()
 
 
@@ -212,31 +218,50 @@ class WeightedFPLinQScheduler:
     a different scheduler silently.
     """
 
-    model_version = "queue_weighted_fplinq_adapter_v1"
+    model_version = "queue_weighted_fplinq_received_power_v2"
+
+    def __init__(self, iterations=100, amplitude_threshold=0.5):
+        self.iterations = int(iterations)
+        self.amplitude_threshold = float(amplitude_threshold)
+        self.last_diagnostics = {}
 
     def eval(self):
         return self
 
     def schedule_with_state(self, state, queues):
-        from utils import baseline as legacy
-
-        if not legacy.SPATIAL_DL_AVAILABLE:
-            raise RuntimeError(
-                "FPLinQ dependencies are unavailable; install the retained "
-                "Spatial-DL baseline environment before selecting this method"
+        if not np.isclose(float(getattr(state, "snr_gap", 1.0)), 1.0):
+            raise ValueError(
+                "the retained FPLinQ update is validated only for the paper's "
+                "0 dB SNR gap"
             )
-        power_gain, _ = legacy.build_power_gain_matrix(state, use_fading=True)
-        gains = power_gain.cpu().numpy()[None, :, :]
+        signal_power = _observed_signal_power(state)
+        links = state.links.detach().cpu()
+        # Matrix orientation: [affected receiver link, transmitting link].
+        gains = signal_power[
+            links[None, :, 0], links[:, None, 1]
+        ]
         weights = torch.as_tensor(
             queues, dtype=torch.float32
-        ).clamp_min(0.0).cpu().numpy()[None, :]
-        general = legacy.general_parameters.parameters()
-        try:
-            allocation = legacy.FPLinQ.FP_optimize(general, gains, weights)
-        except TypeError:
-            allocation = legacy.FPLinQ.FP_optimize(gains, weights)
-        action = (np.sqrt(np.asarray(allocation)[0]) > 0.5).astype(np.float32)
-        action *= (weights[0] > 0).astype(np.float32)
+        ).reshape(-1).clamp_min(0.0).cpu().numpy()
+        allocation, diagnostics = optimize_fplinq(
+            gains.detach().cpu().numpy(),
+            float(state.noise_power),
+            weights,
+            iterations=self.iterations,
+            return_diagnostics=True,
+        )
+        action = binarize_fplinq(
+            allocation, amplitude_threshold=self.amplitude_threshold
+        )
+        action *= (weights > 0).astype(np.float32)
+        self.last_diagnostics = {
+            "iterations": diagnostics.iterations,
+            "max_last_update": diagnostics.max_last_update,
+            "continuous_nonzero_links": int(np.count_nonzero(allocation)),
+            "active_links": int(np.count_nonzero(action)),
+            "global_csi": True,
+            "matrix_semantics": "received_power_at_rx_i_from_tx_j",
+        }
         return torch.from_numpy(action).unsqueeze(1)
 
 

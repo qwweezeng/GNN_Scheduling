@@ -23,6 +23,10 @@ from models.local_physical_reuse import (
     _signal_power_matrix,
     select_local_positive_maxima,
 )
+from utils.feasibility import (
+    project_shared_uav_feasible,
+    shared_uav_action_audit,
+)
 
 
 PAPER_METHOD_NAME = "Marginal-Utility Message-Passing Scheduling"
@@ -144,12 +148,24 @@ class MarginalMPScheduler:
         action = self.initializer.schedule_with_state(
             state, queues
         ).reshape(-1).round().bool().cpu()
+        # The graph conflict set is not, by itself, a complete implementation
+        # of a single-radio/half-duplex assumption.  Enforce the matching
+        # constraint at initialization and after every parallel toggle.
+        initial_candidate = action.clone()
+        direct_priority = torch.as_tensor(
+            getattr(state, "vertex_features", torch.zeros((action.numel(), 1)))
+        ).reshape(action.numel(), -1)[:, 0].float().cpu()
+        action, initial_projection = project_shared_uav_feasible(
+            action.float(), state.links, priorities=direct_priority
+        )
+        action = action.reshape(-1).bool()
         selected_per_round = []
         positive_per_round = []
         active_per_round = [int(action.sum())]
         physical_externality_pairs = []
         direct_service_reports = []
         arbitration_directed_edge_messages = []
+        rejected_per_round = [initial_projection["rejected_project_link_indices"]]
         source, target = state.edge_index.detach().cpu()
         for _ in range(self.rounds):
             active_count = int(action.sum())
@@ -175,8 +191,27 @@ class MarginalMPScheduler:
             selected_per_round.append(int(selected.sum()))
             if not selected.any():
                 break
-            action = torch.logical_xor(action, selected.cpu())
+            candidate = torch.logical_xor(action, selected.cpu())
+            # Keep incumbent links ahead of newly proposed links; among new
+            # links, the exact marginal is the deterministic tie-break score.
+            priority = torch.where(
+                candidate,
+                torch.where(
+                    action,
+                    torch.full_like(marginals, 1e6),
+                    torch.nan_to_num(marginals, nan=-1e6, neginf=-1e6),
+                ),
+                torch.zeros_like(marginals),
+            )
+            action, projection = project_shared_uav_feasible(
+                candidate.float(), state.links, priorities=priority
+            )
+            action = action.reshape(-1).bool()
+            rejected_per_round.append(projection["rejected_project_link_indices"])
             active_per_round.append(int(action.sum()))
+        final_audit = shared_uav_action_audit(action, state.links)
+        if not final_audit["feasible"]:
+            raise RuntimeError("MarginalMP returned an infeasible shared-UAV action")
         self.last_diagnostics = {
             "method": self.paper_acronym,
             "initializer": self.initializer_name,
@@ -197,6 +232,12 @@ class MarginalMPScheduler:
             "arbitration_directed_edge_messages_per_round": (
                 arbitration_directed_edge_messages
             ),
+            "shared_uav_constraint": "single_radio_half_duplex_matching",
+            "hard_feasibility_initial_candidate": shared_uav_action_audit(
+                initial_candidate, state.links
+            ),
+            "hard_feasibility_projection_rejected_per_round": rejected_per_round,
+            "hard_feasibility_final": final_audit,
         }
         return action.float().unsqueeze(1)
 

@@ -1,0 +1,11 @@
+name: gnn-spatial-dl-legacy
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip=24.3.1
+  - numpy=1.23.5
+  - scipy=1.10.1
+  - matplotlib=3.8.4
+  - pip:
+      - tensorflow==2.15.1

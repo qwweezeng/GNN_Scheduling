@@ -45,20 +45,50 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=10086)
     parser.add_argument("--val_seed", type=int, default=10087)
     parser.add_argument("--test_seed", type=int, default=10088)
+    parser.add_argument(
+        "--model-seed", type=int, default=None,
+        help=(
+            "Optional optimizer/model-initialization seed. When omitted, "
+            "--seed is also used for training randomness."
+        ),
+    )
+    parser.add_argument(
+        "--prefix_pool_size", type=int, default=0,
+        help=(
+            "If positive, load this canonical training-pool size and train on "
+            "its first --train_size samples. This is used by the paper data-"
+            "requirement audit so every subset is a true prefix of one pool."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint_out", default="",
+        help="Optional checkpoint path; defaults to the production model path.",
+    )
+    parser.add_argument(
+        "--dataset-root", default="datasets/paper",
+        help="Dataset root; the production cache is datasets/paper.",
+    )
+    parser.add_argument(
+        "--report_out", default="",
+        help="Optional JSON report path; defaults to the production report path.",
+    )
     parser.add_argument("--force_regenerate", action="store_true")
     return parser.parse_args()
 
 
 def _load_or_generate(config, args):
+    pool_size = int(args.prefix_pool_size or args.train_size)
+    if int(args.train_size) > pool_size:
+        raise ValueError("--train_size cannot exceed --prefix_pool_size")
     seeds = {"train": args.seed, "val": args.val_seed, "test": args.test_seed}
     sizes = {
-        "train": args.train_size,
+        "train": pool_size,
         "val": args.val_size,
         "test": args.test_size,
     }
     metadata = expected_dataset_metadata(config, args.num_uav, seeds, sizes)
     train_val_path, test_path = paper_dataset_paths(
-        Path("datasets/paper"), args.num_uav, seeds, sizes
+        Path(args.dataset_root), args.num_uav, seeds, sizes
     )
     if train_val_path.exists() and test_path.exists() and not args.force_regenerate:
         train_val = load_validated_dataset(
@@ -66,7 +96,8 @@ def _load_or_generate(config, args):
         )
         test = load_validated_dataset(test_path, metadata, ("test",))
         return (
-            train_val["train_set"], train_val["val_set"], test["test_set"],
+            train_val["train_set"][: int(args.train_size)],
+            train_val["val_set"], test["test_set"],
             train_val_path,
         )
     generator = build_network_generator(config)
@@ -74,7 +105,7 @@ def _load_or_generate(config, args):
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     train_set = generate_dataset(
-        args.train_size, generator, include_queue_feature=False,
+        pool_size, generator, include_queue_feature=False,
         csi_mode="perfect",
     )
     random.seed(args.val_seed)
@@ -99,7 +130,7 @@ def _load_or_generate(config, args):
     write_dataset_manifest(
         train_val_path.parent, metadata, train_val_path, test_path
     )
-    return train_set, val_set, test_set, train_val_path
+    return train_set[: int(args.train_size)], val_set, test_set, train_val_path
 
 
 def _output_audit(model, dataset):
@@ -175,16 +206,21 @@ def main():
         "CSI_MODE": "perfect",
     })
     train_set, val_set, test_set, dataset_path = _load_or_generate(config, args)
+    pool_size = int(args.prefix_pool_size or args.train_size)
     dataset_metadata = expected_dataset_metadata(
         config,
         args.num_uav,
         {"train": args.seed, "val": args.val_seed, "test": args.test_seed},
         {
-            "train": args.train_size,
+            "train": pool_size,
             "val": args.val_size,
             "test": args.test_size,
         },
     )
+    model_seed = args.seed if args.model_seed is None else args.model_seed
+    random.seed(model_seed)
+    np.random.seed(model_seed)
+    torch.manual_seed(model_seed)
     model = build_gat_scheduler(config, raw_node_dim=1)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     trainer = Trainer(
@@ -200,7 +236,9 @@ def main():
     )
     test_utility = float(trainer.evaluate(model, test_set, use_queue=False))
     audit = _output_audit(model, test_set)
-    checkpoint_path = channel_checkpoint_path(config, args.num_uav)
+    checkpoint_path = Path(args.checkpoint_out) if args.checkpoint_out else (
+        channel_checkpoint_path(config, args.num_uav)
+    )
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "model_version": "channel_gat_v1",
@@ -219,19 +257,28 @@ def main():
             "RICIAN_K_DB": float(args.rician_k_db),
             "CSI_MODE": "perfect",
             "TRAIN_SIZE": int(args.train_size),
+            "TRAIN_POOL_SIZE": pool_size,
             "VAL_SIZE": int(args.val_size),
             "TEST_SIZE": int(args.test_size),
             "SEED": int(args.seed),
+            "MODEL_SEED": int(model_seed),
         },
         "best_epoch": trained["best_epoch"],
         "best_val_utility": trained["best_val_util"],
         "test_utility": test_utility,
         "output_audit": audit,
         "per_epoch_logs": trained["per_epoch_logs"],
+        "training_subset": {
+            "rule": "first_n_prefix_of_canonical_training_pool",
+            "selected_size": int(args.train_size),
+            "pool_size": pool_size,
+            "pool_dataset_fingerprint": dataset_metadata["fingerprint"],
+        },
         "integrity_status": "passed" if audit["integrity_passed"] else "rejected",
         "timestamp": datetime.now().isoformat(),
     }
-    report_path = Path("results/paper/channel_gat_training") / (
+    report_path = Path(args.report_out) if args.report_out else (
+        Path("results/paper/channel_gat_training") /
         f"rician_channel_gat_N{args.num_uav}_K{args.rician_k_db:g}.json"
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,7 @@
+name: gnn-fplinq
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - numpy=1.26.4
+  - scipy=1.11.4

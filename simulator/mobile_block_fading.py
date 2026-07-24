@@ -20,6 +20,7 @@ import numpy as np
 import torch
 
 from models.model import calculate_achievable_rate
+from utils.feasibility import project_shared_uav_feasible, shared_uav_action_audit
 from utils.network_generate import NetworkState
 
 
@@ -467,7 +468,7 @@ def run_mobile_queue_simulation(
     delivered_packet_delays = []
     queue_history, departure_history = [], []
     active_counts, available_counts, available_tx_counts, edge_counts = [], [], [], []
-    utilities, csi_errors = [], []
+    utilities, csi_errors, hard_projection_rejections = [], [], []
     current_block_index = -1
     observed_state = true_state = persistent_indices = None
     scale = net_gen.bandwidth * trace.slot_duration / float(packet_size)
@@ -513,6 +514,28 @@ def run_mobile_queue_simulation(
             observed_state, local_queues
         ).reshape(-1).float().cpu()
         action *= (local_queues > 0).float()
+        # Apply the paper's single-radio/half-duplex constraint uniformly,
+        # including third-party schedulers such as FPLinQ.  Proposed
+        # MarginalMP variants are already feasible, so this is an auditable
+        # no-op for them and a required final arbitration for other methods.
+        direct_power = observed_state.signal_power[
+            observed_state.links[:, 0], observed_state.links[:, 1]
+        ].detach().cpu()
+        solo_rate = torch.log2(
+            1.0
+            + direct_power
+            / (float(observed_state.noise_power) * float(observed_state.snr_gap))
+        )
+        priority = local_queues.detach().cpu() * solo_rate
+        action, hard_feasibility = project_shared_uav_feasible(
+            action, observed_state.links, priorities=priority
+        )
+        hard_projection_rejections.append(
+            float(len(hard_feasibility["rejected_project_link_indices"]))
+        )
+        action = action.reshape(-1).float().cpu()
+        if not shared_uav_action_audit(action, observed_state.links)["feasible"]:
+            raise RuntimeError("mobile scheduler emitted a shared-UAV conflict")
         rates = calculate_achievable_rate(
             action.unsqueeze(1), true_state, binary=True
         ).reshape(-1).cpu()
@@ -618,6 +641,10 @@ def run_mobile_queue_simulation(
         "average_available_transmitter_uavs": float(np.mean(available_tx_counts)),
         "average_directed_conflict_edges": float(np.mean(edge_counts)),
         "average_mws_utility_packets": float(np.mean(utilities)),
+        "average_hard_projection_rejections": float(
+            np.mean(hard_projection_rejections)
+        ),
+        "shared_uav_feasible_all_slots": True,
         "mean_csi_absolute_error_db": float(np.mean(csi_errors)),
         "fading_rho": float(trace.blocks[0].fading_rho),
         "num_persistent_links": trace.num_links,

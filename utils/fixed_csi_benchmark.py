@@ -18,6 +18,8 @@ SCALAR_METRICS = (
     "final_avg_queue",
     "average_queue_backlog",
     "average_queue_backlog_mbit",
+    "average_total_queue_backlog",
+    "average_total_queue_backlog_mbit",
     "average_delay_ms",
     "average_packet_delay_ms",
     "p95_packet_delay_ms",

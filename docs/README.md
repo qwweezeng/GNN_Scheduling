@@ -1,14 +1,10 @@
 # 文档索引
 
-活动文档只保留两个入口。
+当前有效文档只有以下四个：
 
-- `SYSTEM_MODEL.md`：完整物理/移动/block-fading/异质到达模型、Channel-GAT、
-  GAT-Assisted MarginalMP、必要消融、可选CG-CSI和消息开销口径；
-- `EXPERIMENTS.md`：三段仿真逻辑、七幅投稿主图、baseline改造/依赖/重训练表和下一任务
-  的执行闸门。
+1. [`SYSTEM_MODEL.md`](SYSTEM_MODEL.md)：系统模型、Proposed-GAT、GAT-MP、硬约束和 baseline 边界；
+2. [`EXPERIMENTS.md`](EXPERIMENTS.md)：Fig. 1--8 的正式设计、比较方法与 Gate 0；
+3. [`NEXT_CHAT_HANDOFF.md`](NEXT_CHAT_HANDOFF.md)：服务器新 chat 的交接说明；
+4. [`GNN-based link scheduling for dense UAV swarm.pdf`](GNN-based%20link%20scheduling%20for%20dense%20UAV%20swarm.pdf)：必须完整包含在期刊稿中的已发表会议版本。
 
-论文PDF和引用文献仍放在本目录。`archive/`保存研究过程、失败闸门和旧交接记录，只用于
-追溯，不能作为当前方法定义。
-
-原`MARGINAL_MP_SYSTEM_MODEL_AND_HANDOFF.md`已经改名并重写为`SYSTEM_MODEL.md`，避免把
-“当前系统模型”和“聊天交接”混在同一个文件名中。
+其余 PDF 是 baseline/related-work 的参考资料，不定义当前方法。历史 pipeline 与旧图在 `paper_figures/archive_pipeline/`，不属于当前实验入口。

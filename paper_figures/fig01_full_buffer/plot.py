@@ -1,0 +1,105 @@
+#!/usr/bin/env python3
+"""Render the single Fig. 1 rate panel from saved full-buffer JSON results."""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/gnn-scheduling-mpl")
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+from paper_figures.common.plot_style import METHOD_COLORS, METHOD_ORDER, paper_style
+
+
+def _load(nodes: list[int], raw_dir: Path) -> list[dict]:
+    rows = []
+    for num_uav in nodes:
+        payload = json.loads((raw_dir / f"benchmark_N{num_uav}.json").read_text())
+        if int(payload["num_uav"]) != num_uav:
+            raise ValueError(f"N mismatch for {num_uav}")
+        for method in METHOD_ORDER:
+            result = payload["results"].get(method)
+            if result is None:
+                raise ValueError(f"{method} missing for N={num_uav}")
+            rows.append({
+                "num_uav": num_uav,
+                "method": method,
+                "mean_rate_mbps": float(result["mean_aggregate_phy_rate_mbps"]),
+                "sem_rate_mbps": float(result["standard_error_aggregate_phy_rate_mbps"]),
+                "num_samples": int(payload["num_samples"]),
+            })
+    return rows
+
+
+def _write_csv(rows: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def render(rows: list[dict], output: Path) -> None:
+    nodes = sorted({row["num_uav"] for row in rows})
+    lookup = {(row["num_uav"], row["method"]): row for row in rows}
+    x = np.arange(len(nodes), dtype=float)
+    width = 0.12
+    offsets = (np.arange(len(METHOD_ORDER)) - (len(METHOD_ORDER) - 1) / 2) * width
+    with paper_style():
+        mpl.rcParams.update({
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+            "font.size": 7.2,
+            "svg.fonttype": "none",
+            "ps.fonttype": 42,
+        })
+        fig, ax = plt.subplots(figsize=(7.16, 2.5))
+        for index, method in enumerate(METHOD_ORDER):
+            selected = [lookup[(node, method)] for node in nodes]
+            ax.bar(
+                x + offsets[index],
+                [row["mean_rate_mbps"] for row in selected],
+                width=width,
+                color=METHOD_COLORS[method],
+                edgecolor="#303030",
+                linewidth=0.35,
+                label=method,
+            )
+        ax.set_xticks(x, [str(node) for node in nodes])
+        ax.set_xlabel("Number of UAVs")
+        ax.set_ylabel("Total physical-layer rate (Mbit/s)")
+        ax.grid(axis="x", visible=False)
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.26),
+                  frameon=False, columnspacing=0.8, handlelength=1.1)
+        fig.subplots_adjust(left=0.085, right=0.995, bottom=0.22, top=0.76)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output, format="eps")
+        plt.close(fig)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--nodes", default="20,30,40,50")
+    parser.add_argument("--raw-dir", default=str(HERE / "data/raw"))
+    parser.add_argument("--output", default=str(HERE / "figures/fig01_total_rate.eps"))
+    args = parser.parse_args()
+    nodes = [int(item) for item in args.nodes.split(",") if item.strip()]
+    rows = _load(nodes, Path(args.raw_dir))
+    _write_csv(rows, HERE / "data/plotting/fig01_total_rate.csv")
+    render(rows, Path(args.output))
+
+
+if __name__ == "__main__":
+    main()
