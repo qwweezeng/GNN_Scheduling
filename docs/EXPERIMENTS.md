@@ -4,11 +4,11 @@
 
 ## 1. 全部实验的固定条件
 
-- N=20/30/40/50；队列主图额外明确 N=20、50；
+- N=20/30/40/50；队列主图额外明确 N=20、50；如不做特殊声明，令epoch=50.
 - 10 dBm、2.4 GHz、5 MHz、Rician $K=5$ dB；
-- train/validation/test=500/128/128，slot=1 ms，packet=12000 bit；
+- train/validation/test=300/128/128，slot=1 ms，packet=12000 bit；
 - 异质 Poisson 到达：20% hotspot links 承担 70% 总业务；
-- GAT-MP 的 $K=4$；至少五个配对 Monte-Carlo seed（Fig. 2--4 的训练审计为十个 seed）；
+- GAT-MP 的 $K=4$；至少五个配对 Monte-Carlo seed；Fig. 2--4 的训练审计当前采用三个模型初始化 seed，只有标准误过大时才补充 seed；
 - 所有方法共享拓扑、真实信道、arrival trace、link set 和 seed；只改变调度器可见 CSI；
 - 所有最终动作必须是二元，并通过 single-radio/half-duplex hard feasibility；
 - 正式图只用 `figXX_*/run.py` 写原始数据，再用 `plot.py` 画独立 EPS。
@@ -28,19 +28,19 @@
 
 ### Fig. 1：满缓存总物理层速率（第四章）
 
-横轴 N=20/30/40/50，纵轴 total physical-layer rate (Mbit/s)。比较 Random、Top-SNR (3%)、LocalMax、Local Greedy、Spatial DL、Weighted FPLinQ 与 Proposed-GAT。Spatial DL 只能作为满缓存学习 baseline，必须完整 pad/mask，不可只裁剪它自己的链路。该图不报告 queue utility 或 goodput。
+横轴 N=20/30/40/50，纵轴 total physical-layer rate (Mbit/s)。比较 Random、Top-SNR (2%)、Local Greedy、Spatial DL、Weighted FPLinQ 与 Proposed-GAT。Spatial DL 只能作为满缓存学习 baseline，必须完整 pad/mask，不可只裁剪它自己的链路。该图不报告 queue utility 或 goodput。
 
 ### Fig. 2：Proposed-GAT 训练收敛
 
-两个独立子图：训练 loss--epoch、validation binary rate--epoch。N=20/30/40/50，每条曲线平均十个训练 seed。这里的 validation binary rate 是同一网络的硬二元调度速率；不使用“surrogate rate”作为图标签。
+两个独立子图：训练 loss--epoch、validation binary rate--epoch。N=20/30/40/50，每条曲线平均 3 个训练 seed。这里的 validation binary rate 是同一网络的硬二元调度速率；不使用“surrogate rate”作为图标签。
 
 ### Fig. 3：Proposed-GAT 输出审计
 
-两个独立子图：连续 $\pi$ 的均值与标准差--epoch；二元激活链路比例--epoch。复用 Fig. 2 的完全相同十个 seed 训练轨迹，不另行训练。该图回答是否发生全开/全关或输出坍缩。
+两个独立子图：连续 $\pi$ 的均值与标准差--epoch；二元激活链路比例--epoch。复用 Fig. 2 的完全相同 3 个 seed 训练轨迹，不另行训练。该图回答是否发生全开/全关或输出坍缩。
 
 ### Fig. 4：Proposed-GAT 数据需求
 
-横轴训练样本数 10/20/30/40/50/60/80/100/200/300/500；纵轴同一规范 test set 的 test binary rate。N=20/30/40/50 每格十个 seed。每个小样本集必须是同一 500-sample pool 的前缀；模型输出一律经 hard feasibility 后再结算。
+横轴训练样本数 10/20/30/40/60/80/100/200/300，存储训练后所有epoch中效果最好的一个checkpoint；纵轴同一规范 test set 在这个最好checkpoint的 test binary rate。N=20/30/40/50 每格 3 个 seed。每个小样本集必须是同一 300-sample pool 的前缀；模型输出一律经 hard feasibility 后再结算。`n=300` 复用 Fig. 2 的相同 `(N, seed)` checkpoint，不重复训练。同时存储每种情况下训练过程中的best_val_util、best checkpoint和last checkpoint这两种作用于test集后得到的soft test_util（pi没有经过二元化）、hard test_util(pi经过二元化但不做hard feasibility)、经过投影算法hard feasibility后的rate这几种数值，画图时也存储这几种不同的图。
 
 ### Fig. 5：动态队列主结果（第五章）
 

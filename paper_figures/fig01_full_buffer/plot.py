@@ -58,13 +58,15 @@ def render(rows: list[dict], output: Path) -> None:
     offsets = (np.arange(len(METHOD_ORDER)) - (len(METHOD_ORDER) - 1) / 2) * width
     with paper_style():
         mpl.rcParams.update({
-            "font.family": "sans-serif",
-            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
-            "font.size": 7.2,
+            "font.size": 7.5,
+            "axes.labelsize": 7.5,
+            "xtick.labelsize": 7.0,
+            "ytick.labelsize": 7.0,
+            "legend.fontsize": 6.5,
             "svg.fonttype": "none",
             "ps.fonttype": 42,
         })
-        fig, ax = plt.subplots(figsize=(7.16, 2.5))
+        fig, ax = plt.subplots(figsize=(3.5, 2.8))
         for index, method in enumerate(METHOD_ORDER):
             selected = [lookup[(node, method)] for node in nodes]
             ax.bar(
@@ -81,11 +83,12 @@ def render(rows: list[dict], output: Path) -> None:
         ax.set_ylabel("Total physical-layer rate (Mbit/s)")
         ax.grid(axis="x", visible=False)
         ax.spines[["top", "right"]].set_visible(False)
-        ax.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.26),
+        ax.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.22),
                   frameon=False, columnspacing=0.8, handlelength=1.1)
-        fig.subplots_adjust(left=0.085, right=0.995, bottom=0.22, top=0.76)
+        fig.subplots_adjust(left=0.13, right=0.99, bottom=0.25, top=0.78)
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, format="eps")
+        fig.savefig(output.with_suffix(".jpg"), format="jpg", dpi=300, bbox_inches="tight")
         plt.close(fig)
 
 

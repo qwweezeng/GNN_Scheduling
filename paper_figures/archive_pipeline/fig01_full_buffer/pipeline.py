@@ -57,7 +57,7 @@ def _fingerprint(num_uav: int) -> str:
         _paper_config(num_uav),
         num_uav,
         {"train": 10086, "val": 10087, "test": 10088},
-        {"train": 500, "val": 128, "test": 128},
+        {"train": 300, "val": 128, "test": 128},
     )
     return metadata["fingerprint"]
 
@@ -209,7 +209,7 @@ def write_manifest(nodes: list[int], command: list[str]) -> None:
     for num_uav in nodes:
         config = _paper_config(num_uav)
         seeds = {"train": 10086, "val": 10087, "test": 10088}
-        sizes = {"train": 500, "val": 128, "test": 128}
+        sizes = {"train": 300, "val": 128, "test": 128}
         train_val, test = paper_dataset_paths(
             REPO_ROOT / "datasets/paper", num_uav, seeds, sizes
         )
@@ -248,7 +248,7 @@ def write_manifest(nodes: list[int], command: list[str]) -> None:
             "proposed_gat_feasible_decoder": "one_round_endpoint_mutual_handshake",
             "snr_localmax": "one-hop conflict-neighbor maximum",
         },
-        "split_sizes": {"train": 500, "val": 128, "test": 128},
+        "split_sizes": {"train": 300, "val": 128, "test": 128},
         "split_seeds": {"train": 10086, "val": 10087, "test": 10088},
         "methods": METHODS.split(","),
         "datasets": datasets,

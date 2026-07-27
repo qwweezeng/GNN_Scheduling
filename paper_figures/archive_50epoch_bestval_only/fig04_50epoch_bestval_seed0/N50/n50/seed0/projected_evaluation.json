@@ -1,0 +1,8 @@
+{
+  "num_uav": 50,
+  "checkpoint": "/tmp/fig04_50epoch_bestval_seed0/N50/n50/seed0/model.pth",
+  "canonical_test_fingerprint": "5ca09a1cb3cc8524502586b0844e85aef24f8cdcc124d494160bd674e0e6040c",
+  "num_test_samples": 128,
+  "test_binary_rate_mbps": 198.852255679667,
+  "test_binary_rate_sem_mbps": 4.073221485069754
+}

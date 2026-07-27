@@ -1,0 +1,8 @@
+{
+  "num_uav": 40,
+  "checkpoint": "/workspace/GNN_Scheduling_codex/paper_figures/fig04_data_efficiency/data/raw/N40/n30/seed1/model.pth",
+  "canonical_test_fingerprint": "67af9e708b3e4171ebde2c474ed86082b4c87d541287d788110b7b4ea3b8b11b",
+  "num_test_samples": 128,
+  "test_binary_rate_mbps": 163.18182788789272,
+  "test_binary_rate_sem_mbps": 5.04204801528918
+}

@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--lambdas", default="0.5,1,2,2.2,2.4,2.6,2.8,3,3.2")
     parser.add_argument("--deadline-ms", default="none", choices=("none", "2000"))
     parser.add_argument("--end-to-end-checkpoint", default="")
+    parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     args = parser.parse_args()
     for n in [int(x) for x in args.nodes.split(",") if x.strip()]:
         profile = "no_deadline" if args.deadline_ms == "none" else "deadline_2000ms"
@@ -44,7 +45,7 @@ def main() -> None:
             "--num_uav", str(n), "--num_slots", str(args.slots),
             "--arrival_rates", args.lambdas, "--mc_seeds", args.seeds,
             "--rounds", "4", "--channel_model", "rician", "--rician_k_db", "5",
-            "--methods", METHODS, "--output_dir", str(output),
+            "--methods", METHODS, "--device", args.device, "--output_dir", str(output),
         ]
         if args.deadline_ms != "none":
             command += ["--delay_deadline_ms", args.deadline_ms]

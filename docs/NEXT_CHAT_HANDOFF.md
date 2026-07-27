@@ -29,7 +29,7 @@
 
 ## 正式设置与公平性
 
-N=20/30/40/50，10 dBm、2.4 GHz、5 MHz、Rician K=5 dB，500/128/128，slot=1 ms，packet=12000 bit，20% hotspot links 承担 70% Poisson 业务。所有方法共享拓扑、真实信道、arrival trace、link set 和配对 seed。调度器的 CSI 可变，但服务始终用当前真实信道结算。最终动作必须经 `shared_uav_action_audit`。
+N=20/30/40/50，10 dBm、2.4 GHz、5 MHz、Rician K=5 dB，300/128/128，slot=1 ms，packet=12000 bit，20% hotspot links 承担 70% Poisson 业务。所有方法共享拓扑、真实信道、arrival trace、link set 和配对 seed。调度器的 CSI 可变，但服务始终用当前真实信道结算。最终动作必须经 `shared_uav_action_audit`。
 
 ## 图与入口
 
@@ -48,5 +48,5 @@ N=20/30/40/50，10 dBm、2.4 GHz、5 MHz、Rician K=5 dB，500/128/128，slot=1 
 
 1. Fig. 5 的 End-to-End GAT-Q 需要 N=20、N=50 匹配 checkpoint；没有时必须 fail closed，不得替代；
 2. Fig. 7 的非 perfect CSI 曾出现 0 rate，先检查 CSI adapter、图构建和 decoder，再出正式图；0 不是可解释的正式数据点；
-3. Fig. 2/3 需要四个 N、十个 seed 的同一训练轨迹；Fig. 4 是 4×11×10 数据量网格，计算成本高；
+3. Fig. 2/3 当前先使用四个 N、三个 seed 的同一训练轨迹；Fig. 4 是 4×10×3 数据量网格，`n=300` 复用 Fig. 2 checkpoint；若标准误过大再补充 seed；
 4. 如确有必要改 GAT 输入或数据生成方式，只允许先 N=20 最小成本验证，并同步更新 `SYSTEM_MODEL.md`、`EXPERIMENTS.md`、`README.md` 和所有结果 metadata。

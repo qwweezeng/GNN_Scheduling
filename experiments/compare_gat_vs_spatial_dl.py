@@ -47,7 +47,7 @@ from utils.project_setup import (  # noqa: E402
 
 def _canonical_test(config, num_uav, test_size):
     seeds = {"train": 10086, "val": 10087, "test": 10088}
-    sizes = {"train": 500, "val": 128, "test": 128}
+    sizes = {"train": 300, "val": 128, "test": 128}
     expected = expected_dataset_metadata(config, num_uav, seeds, sizes)
     _, test_path = paper_dataset_paths(Path("datasets/paper"), num_uav, seeds, sizes)
     payload = load_validated_dataset(test_path, expected, ("test",))
@@ -96,17 +96,27 @@ def _project_and_settle(actions, priorities, states, decoder="global_priority"):
     return utilities, fractions, sample_records
 
 
+def _direct_rate_priority(probability, state):
+    tx, rx = state.links[:, 0], state.links[:, 1]
+    direct_snr = state.signal_power[tx, rx].cpu() / state.noise_power
+    direct_rate = torch.log2(1.0 + direct_snr / state.snr_gap)
+    return probability.reshape(-1).float().cpu() * direct_rate.float()
+
+
 def _gat_actions(model, states):
-    actions, probabilities = [], []
+    actions, priorities = [], []
     model.eval()
+    device = next(model.parameters()).device
     with torch.no_grad():
         for state in states:
             probability, _ = model(
-                state.vertex_features[:, :1], state.edge_index, state.edge_weights
+                state.vertex_features[:, :1].to(device),
+                state.edge_index.to(device),
+                state.edge_weights.to(device),
             )
-            probabilities.append(probability.reshape(-1).float().cpu())
             actions.append((probability >= 0.5).float().cpu())
-    return actions, probabilities
+            priorities.append(_direct_rate_priority(probability, state))
+    return actions, priorities
 
 
 def _snr_localmax_actions(states):
@@ -153,15 +163,19 @@ def main():
     parser.add_argument("--num_samples", type=int, default=128)
     parser.add_argument("--gat_model", default="")
     parser.add_argument("--seed", type=int, default=10088)
-    parser.add_argument("--fplinq_iterations", type=int, default=100)
     parser.add_argument(
-        "--top_snr_ratio", type=float, default=0.03,
-        help="Fixed global Top-SNR candidate fraction; Fig. 1 uses 3%%.",
+        "--device", default="auto", choices=("auto", "cpu", "cuda"),
+        help="GAT inference device; auto selects CUDA when available.",
+    )
+    parser.add_argument("--fplinq_iterations", type=int, default=50)
+    parser.add_argument(
+        "--top_snr_ratio", type=float, default=0.02,
+        help="Fixed global Top-SNR candidate fraction; Fig. 1 uses 2%%.",
     )
     parser.add_argument(
         "--methods",
         default=(
-            "Random,Top-SNR,LocalMax,Local Greedy,Spatial DL,FPLinQ,"
+            "Random,Top-SNR,Local Greedy,Spatial DL,FPLinQ,"
             "Proposed-GAT"
         ),
     )
@@ -173,6 +187,11 @@ def main():
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
+    device = (
+        "cuda" if args.device == "auto" and torch.cuda.is_available()
+        else args.device if args.device != "auto" else "cpu"
+    )
+    print(f"[evaluate] GAT device={device}", flush=True)
     config = load_config(args.config)
     config.update({
         "NUM_UAV": args.num_uav,
@@ -266,23 +285,24 @@ def main():
                     config,
                     args.gat_model,
                     args.num_uav,
-                    device="cpu",
+                    device=device,
                     expected_dataset_fingerprint=fingerprint,
                 )
             else:
                 model, checkpoint_path = load_channel_gat(
                     config,
                     args.num_uav,
-                    device="cpu",
+                    device=device,
                     expected_dataset_fingerprint=fingerprint,
                 )
             actions, priorities = _gat_actions(model, states)
-            priority_rule = "proposed_gat_activation_priority"
+            priority_rule = "proposed_gat_probability_x_direct_rate"
             decoder = "endpoint_mutual_1"
             method_metadata[name] = {
                 "checkpoint": checkpoint_path,
                 "feasible_decoder": "one_round_endpoint_mutual_handshake",
                 "decoder_training": "none; deterministic score decoder",
+                "gat_priority_mode": "probability_x_direct_rate",
             }
         else:
             raise ValueError(f"Unknown method: {name}")

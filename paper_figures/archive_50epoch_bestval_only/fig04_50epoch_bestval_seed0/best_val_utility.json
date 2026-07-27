@@ -1,0 +1,182 @@
+[
+  {
+    "num_uav": 40,
+    "training_samples": 10,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 33.84890562295914,
+    "best_val_utility_mbps": 169.24452811479568,
+    "best_epoch": 20
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 20,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 37.003965094685555,
+    "best_val_utility_mbps": 185.01982547342777,
+    "best_epoch": 49
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 30,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 38.00246025621891,
+    "best_val_utility_mbps": 190.01230128109455,
+    "best_epoch": 46
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 40,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 41.760050892829895,
+    "best_val_utility_mbps": 208.80025446414948,
+    "best_epoch": 47
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 50,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 39.8493345528841,
+    "best_val_utility_mbps": 199.2466727644205,
+    "best_epoch": 48
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 60,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 42.03262712061405,
+    "best_val_utility_mbps": 210.16313560307026,
+    "best_epoch": 49
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 80,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 42.21481215953827,
+    "best_val_utility_mbps": 211.07406079769135,
+    "best_epoch": 29
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 100,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 42.20076996088028,
+    "best_val_utility_mbps": 211.0038498044014,
+    "best_epoch": 39
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 200,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 42.84247148036957,
+    "best_val_utility_mbps": 214.21235740184784,
+    "best_epoch": 47
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 300,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 42.884542405605316,
+    "best_val_utility_mbps": 214.42271202802658,
+    "best_epoch": 45
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 10,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 36.28821397013962,
+    "best_val_utility_mbps": 181.4410698506981,
+    "best_epoch": 49
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 20,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 43.055584006011486,
+    "best_val_utility_mbps": 215.27792003005743,
+    "best_epoch": 49
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 30,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 43.98913433402777,
+    "best_val_utility_mbps": 219.94567167013884,
+    "best_epoch": 43
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 40,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 44.77355973422527,
+    "best_val_utility_mbps": 223.86779867112637,
+    "best_epoch": 48
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 50,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 45.803349018096924,
+    "best_val_utility_mbps": 229.01674509048462,
+    "best_epoch": 48
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 60,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 45.85647405683994,
+    "best_val_utility_mbps": 229.28237028419971,
+    "best_epoch": 47
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 80,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 46.49721884727478,
+    "best_val_utility_mbps": 232.4860942363739,
+    "best_epoch": 44
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 100,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 47.054773189127445,
+    "best_val_utility_mbps": 235.27386594563723,
+    "best_epoch": 48
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 200,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 48.91125938296318,
+    "best_val_utility_mbps": 244.5562969148159,
+    "best_epoch": 49
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 300,
+    "model_seed": 0,
+    "epochs": 50,
+    "best_val_utility_bps_hz": 48.92372742295265,
+    "best_val_utility_mbps": 244.61863711476326,
+    "best_epoch": 30
+  }
+]

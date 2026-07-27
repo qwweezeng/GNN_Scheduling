@@ -466,9 +466,10 @@ def local_greedy(state, interference_threshold=0.3):
     Local Greedy Scheduling: Select links in SNR order, skipping conflicts.
     
     注意：edge_weights 已被归一化到 [0, 1]，所以 interference_threshold 也应该在 [0, 1] 范围内
-    - 阈值越高，越多链路被认为是"冲突"，激活的链路越少
-    - 阈值越低，激活的链路越多
-    默认 0.3 表示：干扰增益 > 0.3*max_weight 的链路对认为有冲突
+    - 阈值越高，越少边满足 ``weight > threshold``，激活链路通常越多
+    - 阈值越低，更多边被视为冲突，激活链路通常越少
+    默认 0.3 表示：log 变换并按该样本最大值归一化后的边权重大于 0.3 时，
+    该链路对被视为冲突。
     """
     num_vertices = state.num_vertices
     snr_values = state.vertex_features[:, 0]

@@ -12,9 +12,7 @@ events.out.tfevents.*
 .venv/
 .pytest_cache/
 
-# Datasets - too large for GitHub
+# Datasets and runtime logs are too large for GitHub
 datasets/
 logs/
-results/
 uav_network_init.png
-*.pth

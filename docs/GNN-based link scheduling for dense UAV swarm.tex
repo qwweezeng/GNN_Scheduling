@@ -1,0 +1,358 @@
+\documentclass[journal]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage[normalem]{ulem}
+\usepackage{algorithmic}
+\usepackage{algorithm} 
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor,bm,dsfont}
+\usepackage{verbatim}
+\usepackage{booktabs, multirow, caption}
+\usepackage[T1]{fontenc}
+\usepackage{aecompl}
+
+\newtheorem{remark}{Remark}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+		T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+	
+	\title{GAT-assisted Wireless Link Scheduling for Dense UAV Swarm Networks}
+	
+	\author{Qingzhe~Zeng, Lin~Bai, Rui~Han, Jiaxing~Wang, Xin~Xie, and Guowei~Shi
+		\thanks{Qingzhe Zeng, Lin Bai, Rui Han, and Jiaxing Wang are with the School of Cyber Science and Technology, Beihang University, Beijing, China (e-mail: \{qzzeng, l.bai, ruihan, wang\_jx\}@buaa.edu.cn).}
+		\thanks{Xin Xie is with the School of Communications and Information Engineering, Chongqing University of Posts and Telecommunications, Chongqing, China (e-mail: xiex@cqupt.edu.cn).}
+		\thanks{Guowei Shi is with the China Academy of Information and Communications Technology, Beijing, China (e-mail: shigw@sohu.com).}
+		\thanks{This work was supported in part by XXX. \textit{(Corresponding author: Rui Han)}}}
+	
+	\maketitle
+	
+	\begin{abstract}
+		In dense uncrewed aerial vehicle (UAV) swarm networks, massive node connectivity leads to severe interference and collisions, intensely limiting network resource utilization. Therefore, it is imperative to achieve efficient and distributed wireless link scheduling. Recently, graph neural networks (GNNs) have emerged as a promising paradigm for wireless scheduling problems. However, existing GNN-based methods often rely on simplified network modeling or global graph computation, making them less suitable for densely connected, fully distributed and energy constrained UAV ad hoc networks. To address these challenges and promote green communications, this paper proposes a distributed scheduling framework via graph attention networks (GATs). We first construct a weighted directed conflict graph to capture heterogeneous and asymmetric interference relationships. An edge-enhanced attention mechanism is then introduced, where edge weights are explicitly incorporated into the attention mechanism, enabling each link to infer dominant interference pattern from limited neighborhood interactions. \textcolor{blue}{Furthermore, to alleviate the probing overhead associated with perfect channel state information (CSI) acquisition in dynamic swarms, we evaluate the framework using quantized distance information.} Simulation results demonstrate that the proposed scheme significantly outperforms conventional benchmarks in terms of network throughput, while exhibiting high data efficiency, fast convergence and strong scalability in dense UAV swarm scenarios. \textcolor{blue}{Notably, the quantized CSI-based approach achieves competitive performance, indicating its potential to reduce the signaling burden in practical UAV deployments.}
+	\end{abstract}
+	
+	\begin{IEEEkeywords}
+		Wireless link scheduling, Graph attention networks, UAV swarm networks, Interference management.
+	\end{IEEEkeywords}
+	
+	\section{Introduction}
+	Driven by the rapid evolution of 6G communication and low-altitude economy, uncrewed aerial vehicles (UAVs) have attracted increasing interest to support diversified tasks. To handle complex collaborative missions, flying ad-hoc networks (FANETs) have emerged as a preferable architecture due to their decentralized, self-organizing, and resilient characteristics \cite{uav, ning1, xie}. \textcolor{red}{Unlike infrastructure-based cellular networks, FANETs offer inherent flexibility and robustness against single-point failures, making them highly suitable for emergency response and military applications.} However, as swarm density grows, limited wireless resources lead to mutual interference and packet collisions, sharply degrading overall network throughput and spectrum efficiency, while causing severe energy wastage due to retransmissions.
+	
+	In dense FANETs, traditional contention-based access such as carrier sense multiple access with collision avoidance (CSMA/CA) \cite{csma} becomes increasing inefficient as uncoordinated concurrent transmissions cause excessive collisions. \textcolor{red}{Particularly in 3D FANET topologies, the lack of physical boundaries and the high probability of Line-of-Sight (LoS) links severely exacerbate hidden and exposed terminal problems, rendering simple carrier sensing mechanisms inadequate.} Therefore, link scheduling mechanisms determine a subset of links to activate while silencing others, which are generally preferred for interference management. The link scheduling problem is typically formulated as a maximum weighted independent set (MWIS) problem on a conflict graph, where vertices represent communication links and edges capture interference relationships \cite{qcsma, zhaoSparsification}. 
+	
+	Although MWIS-based scheduling can achieve throughput optimality under ideal conditions \cite{TassiulasEphremides1992}, the problem is NP-hard and solving it becomes difficult in dense and dynamic ad-hoc networks. To address this, various sub-optimal approximations have been proposed, including distributed greedy schedulers \cite{LGS} and iterative fractional programming \cite{fplinq}. While these methods offer considerable feasibility, some of them rely on numerous inter-node interactions, others require accurate or global channel state information (CSI) or incur unaffordable computation, imposing heavy energy burdens on resource-limited UAVs. \textcolor{red}{Such extensive iterative handshaking introduces heavy signaling overhead that scales poorly with network density, which is impractical to sustain in fast-varying UAV swarm environments where channels fluctuate rapidly.}
+	
+	Recently, learning-based approaches have emerged as a promising alternative \cite{JiangSurvey2022, ning2, spatialDL, graphEmbedding, zhaoSparsification}. In particular, graph neural networks (GNNs) align with the interference graph structure of scheduling MWIS problems, and can exploit localized message passing to learn effective representations from coarse observations. \textcolor{red}{Their inherent permutation equivariance (PE) and inductive generalization abilities enable the trained models to remain applicable across varying network sizes and topologies without the need for retraining.} Nevertheless, existing GNN-based wireless scheduling methods still face limitations in dense UAV swarm networks. Prevalent models often rely on simplified undirected graphs, failing to distinguish heterogeneous interference strengths in dense deployments. Moreover, most approaches adopt spectral graph convolution networks (GCNs) \cite{spatialDL, zhaoSparsification}, which are restricted to symmetric graph structures. \textcolor{red}{GCNs inadvertently force a homogeneous smoothing of latent features across neighboring nodes, which completely dilutes the highly asymmetric nature of physical wireless interference (e.g., a strong transmitter interfering with a distant weak receiver).} Furthermore, they often entail higher coordination overhead, limiting scalability in large, densely connected networks. 
+	
+	To address these gaps, we propose a distributed graph attention networks (GATs)-assisted link scheduling framework for dense UAV swarm ad-hoc networks. Our approach models a weighted directed conflict graph and explicitly maps edge weights into the attention computation, allowing each link to infer dominant interference patterns from low-dimensional local observations. This edge-enhanced attention mechanism allows the scheduling agent to adaptively prioritize dominant interference while suppressing weakly coupled ones. By operating in the spatial domain rather than the spectral domain, GATs perform local aggregation via message passing without requiring global graph processing, better matching the decentralized and dynamic nature of dense FANETs.
+	
+	The main contributions of this paper can be summarized as follows:
+	\begin{itemize}
+		\item[\textit{i)}] We construct a quantized and directed conflict graph model for link scheduling problem in dense UAV swarm networks. \textcolor{red}{By transitioning from traditional binary protocol models to a precise physical interference model,} explicitly incorporating interference intensity into directed edge weights, the model captures more accurate features with minimal measurement overhead.
+		\item[\textit{ii)}] We develop an edge-enhanced GAT-based distributed scheduler that learns from low-dimensional local features and extracts network-wide interference awareness through limited message passing. \textcolor{red}{We thoroughly analyze the training dynamics and reveal how to avert trivial collapse in unsupervised learning without relying on complex regularization penalties.}
+		\item[\textit{iii)}] \textcolor{blue}{To mitigate the substantial signaling cost required for acquiring instantaneous perfect CSI in mobile swarms, we investigate a low-complexity variation of the framework that relies solely on quantized geographic distances, thereby decoupling the MAC-layer scheduling from strict physical-layer channel estimation.}
+		\item[\textit{iv)}] Simulation results demonstrate that our method significantly improves spectrum utilization, converges rapidly with extremely few training samples, and exhibits robust scalability. \textcolor{blue}{Furthermore, using coarse quantized distances can still provide satisfactory scheduling performance, achieving up to 95\% of the perfect-CSI upper bound, which dramatically reduces the channel probing pressure in dynamic environments.}
+	\end{itemize}
+	
+	The remainder of this paper is as follows. Section \ref{s2} presents the system model. Section \ref{s3} introduces the GAT-based scheduling framework. Simulation results are given in Section \ref{s4}, and Section \ref{s5} concludes the paper.
+	
+	\section{System Model}\label{s2}
+	
+	\subsection{Network and Channel Model}
+	In this paper, we consider a dense FANET comprised of $N$ single-antenna UAVs, which are densely distributed in a volumetric 3D space. We consider a single-radio single-channel (SRSC) wireless network, where all nodes communicate with their neighbors over the same channel. The air-to-air (A2A) channel between $\mathrm{UAV}_i$ and $\mathrm{UAV}_j$ can be modeled as \cite{jpnoma}:
+	\begin{equation}
+		h_{i,j}=a_{i,j}g_{i,j}, \quad i,j\in\{1,2,\ldots,N\},
+	\end{equation}
+	where $a_{i,j} = \sqrt{\lambda_0}d_{i,j}^{-\xi/2}$ represents the large-scale path loss. 
+	$\lambda_0 = \frac{G_{\rm t}G_{\rm r}\lambda^2}{(4\pi)^2}$ denotes the path loss at the reference of 1\,m, and $d_{i,j}$ is the distance between $\mathrm{UAV}_i$ and $\mathrm{UAV}_j$. $\xi>0$ is the path loss exponent, which is typically set to 2.2 to 2.7 for A2A channels \cite{liu2019A2AModel}. The small-scale factor $g_{i,j}$ is assumed to follow Rayleigh fading, satisfying $g_{i,j}\sim \mathcal{CN}(0,1)$. 
+	
+	This SRSC FANET can be expressed as a directed communication graph $\mathcal{G}_c(\mathcal{U}, \mathcal{V})$, where $\mathcal{U}=\{\mathrm{UAV}_1, \ldots, \mathrm{UAV}_N\}$. We consider a minimum input sensitivity at the receiver \cite{80211be}, so that there exists a communication link $v_{i,j}\in \mathcal{V}$ between $\mathrm{UAV}_i$ and $\mathrm{UAV}_j$ only if the signal-to-noise ratio (SNR) meets the threshold $\beta$ \cite{jxpylon}:
+	\begin{equation}
+		\mathsf{SNR}_{i,j} = \frac{P\vert h_{i,j}\vert^2}{N_0} \geq \beta,
+	\end{equation}
+	where each node transmits signals with a constant power $P$, and $N_0$ is the power of the additive circularly symmetric complex Gaussian (CSCG) white noise.
+	
+	\subsection{Directed Conflict Graph Construction}
+	To characterize competition and interference in wireless networks with simultaneous access to the same time-frequency resources, \textit{conflict graphs} are widely employed to depict the interference relationships between communication links. Existing studies are primarily based on two mainstream interference models \cite{guptaCapacity2000, ImpactInterference}: the \textit{protocol model} and the \textit{physical model}. 
+	In a conflict graph, vertices represent active communication links in the FANET, while edges indicate the interference relationships of these links. The protocol model employs a binary representation of interference levels, where an undirected edge exists between two vertices if the geometric distance or interference exceeds a certain threshold. \textcolor{red}{Although this representation is highly concise and analytically tractable, it fails to capture the extent of interference in dense swarm with massive links. Specifically, the binary protocol model tends to overemphasize conflicts of all levels, indiscriminately silencing links with endurable interference, which may lead to a conservative and inefficient scheduling.}
+	
+	To overcome this, we construct a weighted and directed conflict graph $\mathcal{G}(\mathcal {V},\mathcal{E},\mathcal{W})$ based on the physical interference model to provide a more precise and realistic characterization of the wireless environment. As illustrated in Fig. \ref{conflict}, the vertices of conflict graph $\mathcal{G}(\mathcal {V},\mathcal{E},\mathcal{W})$ are mapped from the link set of the communication graph $\mathcal{G}_c(\mathcal{U}, \mathcal{V})$. For any distinct pair of links $(u, v) \in \mathcal{V}$, if $P\vert h_{\mathrm{T}(u),\mathrm{R}(v)}\vert^2\geq \frac{P\vert h_{\mathrm{T}(v),\mathrm{R}(v)}\vert^2}{\beta}-N_0$ \cite{ImpactInterference}, there is a directed edge $e(u,v)\in \mathcal{E}$, where $\mathrm{T}(v)$ and $\mathrm{R}(v)$ represent the transmitter and receiver of $v$. \textcolor{red}{This actively indicates that the communication link $u$ introduces significant interference to the reception of $v$.} Specifically, the weight of edge $e(u,v)$ is given by $w(u,v)\in \mathcal{W}$ \cite{ImpactInterference}, quantifying the specific interference degree:
+	\begin{equation}
+		w(u,v)= \frac{P\vert h_{\mathrm{T}(u),\mathrm{R}(v)}\vert^2}{P\vert h_{\mathrm{T}(v),\mathrm{R}(v)}\vert^2 / \beta-N_0}, \forall u,v\in\mathcal{V}.\label{eq:edgeweight}
+	\end{equation}
+	The quantized weights $w(u,v)$ can be approximated via short-term local measurements such as SNR or received signal strength (RSS) information, eliminating dependence on instantaneous global CSI measurements.
+	
+	\begin{figure}[!tb]
+		\centering
+		\includegraphics[width=\columnwidth]{conflict graph}
+		\caption{Mapping from communication graph to directed conflict graph.}
+		\label{conflict}
+	\end{figure}
+	
+	\begin{figure*}[!tb]
+		\centering
+		\includegraphics[width=0.95\textwidth]{train}
+		\caption{Illustration of the GAT-assisted distributed scheduling framework.}
+		\label{train}
+	\end{figure*}
+	
+	\subsection{Problem Formulation}
+	Let ${\bm\pi}=\left[\pi_v\right]_{v\in \mathcal{V}}\in \{0,1\}$ denote the scheduling decision vector for links $v\in \mathcal{V}$. The link $v$ is scheduled for transmission when its corresponding variable $\pi_v$ is set to 1, and silenced otherwise. Treating inter-link interference as noise, the achievable rate of each link $v$ is given by:
+	\begin{equation}
+		R_v=B\log_2\left(1+\frac{\pi_vP\vert h_{\mathrm{T}(v),\mathrm{R}(v)}\vert^2}{\sum_{u\in \mathcal{N}(v)}\pi_uP\vert h_{\mathrm{T}(u),\mathrm{R}(v)}\vert^2+N_0}\right),
+	\end{equation}
+	where $B$ is the bandwidth, and $\mathcal{N}(v)$ denotes the incoming neighbor set of $v$ in the conflict graph $\mathcal{G}$. Finally, to optimize the spectrum efficiency in dense FANET, we formulate the scheduling problem as a network sum-rate maximization:
+	\begin{equation}
+		\mathcal{P}: \mathop{\arg\max}\limits_{\{\pi_v \in \{0,1\} \vert\forall v\in\mathcal{V}\}}\sum_{v\in\mathcal{V}}\pi_v \cdot R_v.
+		\label{p1}
+	\end{equation}
+	
+	\textcolor{red}{Note that this framework can be flexibly extended to incorporate quality of service (QoS) requirements. By considering other parameters like dynamic queue length backlog or priority of service, a dynamic utility function $U_v(t)$ could be readily integrated to formulate a generalized weighted throughput maximization problem:
+		\begin{equation}
+			\mathcal{P}^*: \mathop{\arg\max}\limits_{\{\pi_v \in \{0,1\} \vert\forall v\in\mathcal{V}\}} \sum_{v\in\mathcal{V}}\pi_v \cdot U_v \cdot R_v.
+		\end{equation}
+		Our proposed GAT framework can naturally accommodate this extension by simply appending the dynamic QoS weight $U_v$ into the initial state feature vector without altering the graph topology.}
+	
+	
+	\section{Distributed Link Scheduling via GATs}\label{s3}
+	
+	\subsection{Framework Design and Feature Embedding}\label{ss3A}
+	In a dense UAV swarm, conflict graphs exhibit extremely high vertex degrees, introducing substantial computational challenges for spectral-based GNN scheduling schemes. To address the lightweight requirement in distributed large-scale swarms, we adopt a spatial-based graph learning framework. GAT mechanisms perform message passing by directly aggregating information from neighbors in the graph domain, which enables each UAV link to make decisions solely dependent on localized observations.
+	
+	We employ a centralized training and distributed execution \textcolor{red}{(CTDE)} paradigm to deploy our proposed scheduling scheme. As illustrated in Fig. \ref{train}, during the offline training phase, the model exploits global network snapshots to learn generalized topological interference patterns. Once trained, it is deployed on individual UAV nodes in a fully distributed manner. \textcolor{red}{During the online operating phase, scheduling decisions are made locally. Each node relies exclusively on low-dimensional local features such as its own SNR and the received signal strength from immediate neighbors, eliminating the need for real-time acquisition of accurate global CSI and completely bypassing the prohibitive signaling overhead of iterative inter-node handshaking.}
+	
+	Specifically, we first leverage a \textit{struct2vec} graph embedding \cite{graphEmbedding} to construct state features. Each vertex $v\in \mathcal{V}$ constructs a raw feature vector ${\bf x}_v = \left[\mathsf{SNR}_v\right]$, which is then mapped into low-dimensional embeddings via a multi layer perceptron (MLP), serving as initial vertex representations for the subsequent GAT message passing:
+	\begin{equation}
+		{\bf h}_v^{(0)} = \sigma_0\left({\bf W}_0{\bf x}_v+{\bf b}_0\right),
+	\end{equation}
+	where ${\bf h}_v^{(0)}$ denotes the initial embedding of $v$, $\sigma_0(\cdot)$ is an activation function, and $\{{\bf W}_0, {\bf b}_0\}$ are learnable parameters.
+	
+	\subsection{Edge-Enhanced Attention Mechanism}
+	To achieve low complexity distributed scheduling, we propose an iterative message-passing GAT mechanism. By aggregating information within local neighborhoods over finite iterations, each vertex progressively expands its effective receptive field to implicitly capture global interference patterns. 
+	
+	Let ${\bf h}_v^{(l)}$ denote the feature vector of vertex $v$ at the $l$-th GAT layer. At each iteration, the GAT layer assembles information from the neighbor set $\mathcal{N}(v)$ to update vertex representation. To capture asymmetric interference relationships, we incorporate the physical edge weights $w_{u,v}$ into the attention coefficients. The correlation score $e_{u,v}^{(l)}$ is evaluated as:
+	\begin{equation}
+		e_{u,v}^{(l)} = \mathrm{LeakyReLU}\left({\bf a}^{\mathrm{T}} \left[ {\bf W}{\bf h}_v^{(l)} \Vert {\bf W}{\bf h}_u^{(l)} \Vert {\bf W}_{\mathrm{e}}w_{u,v} \right]\right),
+	\end{equation}
+	where ${\bf a}^{\mathrm{T}}$ is the attention weight vector, $\{{\bf W},{\bf W}_{\mathrm{e}}\}$ transform vertex and edge features. The scores are normalized via softmax function to obtain the attention coefficient $\alpha_{u,v}^{(l)}$:
+	\begin{equation}
+		\alpha_{u,v}^{(l)} = \frac{\exp\left(e_{u,v}^{(l)}\right)}{\sum_{k\in\mathcal{N}(v)}\exp\left(e_{k,v}^{(l)}\right)}. \label{attention}
+	\end{equation}
+	Compared with traditional unweighted models, explicitly incorporating directed edge features ensures the heterogeneous interference relationships precisely reflected in neural embeddings.
+	
+	To capture diverse interference dynamics such as varying geographic distances and rapid small-scale fading, we adopt multi-head attention. \textcolor{red}{By executing $K$ independent attention heads in parallel, the model projects the vertex features into multiple distinct representation subspaces. For instance, one specific head might learn to focus on large-scale path loss to identify spatially distant aggregate interferers, while another head might specialize in responding to sudden, severe deep fades.} Their outputs are concatenated to form the final update for each iteration:
+	\begin{equation}
+		{\bf h}_v^{(l+1)} = \mathop{\Big\Vert}_{k=1}^K \sigma\left( \sum_{u\in\mathcal{N}(v)}\alpha_{u,v}^{(k)}
+		\left({\bf W}^{(k)}{\bf h}_u^{(l)} + {\bf W}_{\mathrm{e}}^{(k)}w_{u,v}\right)
+		\right),
+	\end{equation}
+	where the superscript $(k)$ denotes parameters of the $k$-th head. 
+	
+	\subsection{Unsupervised Learning and Final Scheduling Decision}
+	Dense conflict graphs tend to be fully connected, so only a few message-passing iterations are adequate\cite{graphEmbedding}. In practice, $L=2$ is sufficient to capture dominant local interference without incurring over-smoothing. After $L$ rounds, the final scheduling probability $\pi_v \in (0,1)$ is generated by mapping the final embedding ${\bf h}_v^{(L)}$ through an output MLP combined with a sigmoid activation:
+	\begin{equation}
+		\tilde{\pi}_v = \mathrm{sigmoid}\left(\Gamma({\bf h}_v^{(L)})\right) \in (0, 1).
+	\end{equation}
+	
+	To preserve differentiability, scheduling variables are relaxed to soft continuous $\tilde{\pi}_u$ in the training process. \textcolor{red}{To maintain tractability for gradient-based backpropagation in the capacity formula, we approximate the interference using the expected transmission power $\tilde{\pi}_u P$.} The resulting continuous achievable rate is:
+	\begin{equation}
+		\tilde{R}_v = B\log_2\left(1+\frac{\tilde{\pi}_vP\vert h_{\mathrm{T}(v),\mathrm{R}(v)}\vert^2}{\sum_{u\in \mathcal{N}(v)}\tilde{\pi}_u P\vert h_{\mathrm{T}(u),\mathrm{R}(v)}\vert^2+N_0}\right).
+	\end{equation}
+	
+	\addtolength{\topmargin}{0.05in}
+	We adopt an unsupervised learning paradigm where the GNN is trained end-to-end to minimize the negative expected sum rate:
+	\begin{equation}
+		\mathcal{L}(\boldsymbol{\theta}) = - \sum_{v\in\mathcal{V}} \tilde{\pi}_v \cdot \tilde{R}_v. \label{loss_function}
+	\end{equation}
+	
+	During the online deployment phase, the soft output $\tilde{\pi}_v$ is binarized to yield the final discrete scheduling decisions $\pi_v$. The complete inference process executed at each node is summarized in Algorithm \ref{alg:scheduling}.
+	
+	\textcolor{red}{Furthermore, since the forward passing of the lightweight MLPs and the finite GAT layers involves only elementary low-dimensional matrix multiplications, the scheduling inference can be executed within sub-milliseconds. This rapid, one-shot distributed execution completely avoids severe communication delays associated with iterative heuristic solvers, making it exceptionally well-suited for the strict latency constraints of fast-varying FANET topologies.}
+	
+	\begin{algorithm}[tb]
+		\caption{Distributed GAT-assisted Link Scheduling}
+		\label{alg:scheduling}
+		\begin{algorithmic}[1]
+			\REQUIRE Conflict graph $\mathcal{G}(\mathcal{V}, \mathcal{E}, \mathcal{W})$, local node features $\{{\bf x}_v\}_{v\in\mathcal{V}}$, layer count $L$, attention heads $K$.
+			\ENSURE Discrete link activation decisions $\pi_v \in \{0, 1\}$.
+			\STATE \textbf{Initialization Phase:} 
+			\STATE Extract initial embeddings: ${\bf h}_v^{(0)} = \sigma_0({\bf W}_0{\bf x}_v+{\bf b}_0)$.
+			\STATE \textbf{Message Passing Phase:} 
+			\FOR{layer $l = 0$ to $L-1$}
+			\FOR{each vertex $v \in \mathcal{V}$ \textbf{in parallel}}
+			\FOR{each head $k = 1$ to $K$}
+			\STATE Compute attention score $e_{u,v}^{(k)}$ and normalized weight $\alpha_{u,v}^{(k)}$ for neighbors $u \in \mathcal{N}(v)$ via Eq. \eqref{attention}.
+			\STATE Aggregate: \\${\bf z}_v^{(k)} = \sum_{u} \alpha_{u,v}^{(k)} \left({\bf W}^{(k)}{\bf h}_u + {\bf W}_{\mathrm{e}}^{(k)}w_{u,v}\right)$.
+			\ENDFOR
+			\STATE Update state: ${\bf h}_v^{(l+1)} = \mathop{\Big\Vert}_{k=1}^K \sigma({\bf z}_v^{(k)})$.
+			\ENDFOR
+			\ENDFOR
+			\STATE \textbf{Decision Output Phase:} 
+			\FOR{each vertex $v \in \mathcal{V}$ \textbf{in parallel}}
+			\STATE Compute soft probability: $\tilde{\pi}_v = \mathrm{sigmoid}\left(\Gamma({\bf h}_v^{(L)})\right)$.
+			\STATE Binarize decision: $\pi_v=\mathds{1}(\tilde{\pi}_v\ge 0.5)$.
+			\ENDFOR
+		\end{algorithmic}
+	\end{algorithm}
+	
+	\begin{remark}[On Loss Function Design and Training Stability]
+		A critical challenge in training unsupervised GNNs is convergence stability. Since the loss function in Eq. \eqref{loss_function} applies symmetrically to all links, in our early experiments we observed that gradients frequently push all nodes to act greedily, causing a model collapse into an all-ones (full transmission collision) state.
+		
+		To actively guide gradients, inspired by existing literature \cite{spatialDL}, we first introduce a sparsity penalty, which merely forced the network to toggle between all-ones and all-zeros collapse. Subsequently, we innovatively designed a joint sparsity and conflict penalty to guide distributed nodes to learn a collectively optimal scheduling strategy and achieve uniform sparsification:
+		\begin{equation}
+			\mathcal{L}_{\mathrm{reg}}(\boldsymbol{\theta}) = - \sum_{v\in\mathcal{V}} \tilde{\pi}_v \tilde{R}_v + \frac{\lambda_1}{|\mathcal{V}|}\sum_{v\in\mathcal{V}} \tilde{\pi}_v + \lambda_2 \sum_{e(u,v)\in\mathcal{E}} w_{u,v}\tilde{\pi}_u\tilde{\pi}_v.
+		\end{equation}
+		Empirically, we observed that this penalty indeed acted as a reliable ``safety guard", successfully averting model collapse at borderline learning rates (e.g., around $\text{LR} = 3\times 10^{-4}$).
+		
+		However, rigorous ablation studies revealed a deeper insight: while these penalties are theoretically appealing for guiding gradients, the fundamental trigger for trivial collapse in our architecture is gradient explosion within the highly non-convex fractional landscape. By adopting a strictly controlled learning rate regime ($\text{LR} = 10^{-4}$), the GAT can achieve robust training stability and inherently learn the competitive inhibition via a pure sum-rate objective. This concise design frees the system from cumbersome hyperparameter tuning associated with auxiliary penalties.
+	\end{remark}
+	
+	\section{Simulation Results}\label{s4}
+	In this section, we evaluate the performance of the proposed GAT-based distributed scheduling scheme. We first provide scheduling performance in terms of network throughput, and then investigate the convergence behavior, data efficiency and scalability performance of the proposed learning framework. \textcolor{blue}{Finally, we analyze the robustness of our model under low-overhead quantized CSI settings.}
+	
+	\subsection{Implementation Details}
+	We consider a dense UAV swarm network deployed within a $1000\,\text{m} \times 1000\,\text{m}\times 100\,\text{m}$ airspace. To simulate a realistic dense deployment, we vary the number of UAV nodes $N$ from 20 to 50, ensuring a minimum separation distance of $20\,\text{m}$ to avoid physical collisions.
+	
+	The proposed model is implemented using PyTorch and trained on an NVIDIA GeForce RTX 4090 GPU. We adopt the Adam optimizer with a learning rate of $10^{-4}$ to ensure stability. The detailed simulation and parameter settings are summarized in Table~\ref{tab:sim_params}.
+	
+	\begin{table}[htbp]
+		\caption{Simulation Parameters}
+		\label{tab:sim_params}
+		\centering
+		\begin{tabular}{ll}
+			\toprule
+			\textbf{Parameters} & \textbf{Values} \\
+			\midrule
+			\multicolumn{2}{c}{\textit{Network Environment}} \\
+			\midrule
+			Number of UAV links ($N$) & 20 / 30 / 40 / 50 \\
+			Area Size & $1000 \times 1000\times 100$ m$^3$ \\
+			UAV Altitude & $[50, 150]$ m \\
+			Minimum inter-UAV distance & $20$ m \\
+			Transmit Power ($P_0$) & $10$ dBm \\
+			Carrier Frequency ($f_c$) & 2.4 GHz \\
+			Noise Power Density & $-169$ dBm/Hz \\
+			Path Loss Exponent ($\xi$) & 2.5 \\
+			Connectivity SNR Threshold ($\beta$) & 5 dB \\
+			\midrule
+			\multicolumn{2}{c}{\textit{Model Architecture}} \\
+			\midrule
+			MLP Hidden Dims for Embedding & [32, 32]\\
+			Embedding Output Dim & 32 \\
+			GAT Layers ($L$) & 4 \\
+			Attention Heads ($K$) & 4 \\
+			GAT Output Dim of All Heads & 48\\
+			Scheduling MLP Hidden Dim & 32 \\
+			\midrule
+			\multicolumn{2}{c}{\textit{Training Configuration}} \\
+			\midrule
+			Optimizer & Adam (LR=$10^{-4}$) \\
+			Epochs & 30 \\
+			Training / Validation / Test Samples & 300 / 128 / 128 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	\subsection{Network Throughput Performance}
+	To evaluate the performance of our proposed GAT-based scheduler, we illustrate the network throughput performance defined in Eq. \eqref{p1} comparing with the following benchmarks:
+	\begin{itemize}
+		\item \textbf{Random Activation (Random):} Each link is independently activated with a fixed probability $p=0.05$.
+		\item \textbf{Signal-Strength Greedy (Simple Greedy):} A fixed proportion (set to $10\%$) of links with the highest local SNR are activated, ignoring potential mutual interference.
+		\item \textbf{Interference-Aware Greedy (Local Greedy):} A simplified version of the distributed greedy scheduler\cite{LGS}, which iteratively activates the link with highest SNR, while all its conflicting neighbors are removed from candidates.
+		\item \textbf{Spatial Deep Learning (Spatial DL) \cite{spatialDL}:} A GCN-based scheduling paradigm over undirected interference graph.
+	\end{itemize}
+	
+	\begin{figure}[!tb]
+		\centering
+		\includegraphics[width=\columnwidth]{baseline_comparison}
+		\caption{Utility performance compared with benchmarks.}
+		\label{performance}
+	\end{figure}
+	
+	Fig.~\ref{performance} illustrates the test utility as the network density increases from $N=20$ to $N=50$ UAVs. Our proposed GAT consistently outperforms all benchmark schemes. 
+	The \textit{Random} and \textit{Simple Greedy} schemes exhibit nearly constant throughput across different network sizes, since their activation policies are static and do not adapt to the complex interference structure.
+	\textit{Local Greedy} achieves higher throughput by explicitly avoiding strong interference through conflict-aware link selection. However, its reliance on iterative neighborhood coordination and sequential signaling overhead limit its practicality.
+	
+	The \textit{Spatial DL} scheduler benefits from learning-based feature extraction. Nevertheless, its performance gap with the proposed approach becomes more pronounced as the network density increases. This can be attributed to its GCN-style spatial convolution, which relies on aggregating information over a fixed graph structure and implicitly assumes a predefined link set. Moreover, the global convolution required by GCN-based models incurs higher computational and signaling overhead, making them less suitable for dense ad-hoc deployments with strict latency and scalability constraints.
+	
+	\subsection{Convergence Analysis}
+	
+	\begin{figure}[!tb]
+		\centering
+		\includegraphics[width=\columnwidth]{training_curves_train_loss}
+		\caption{Training loss versus epochs under different densities.}
+		\label{epoch}
+	\end{figure}
+	
+	To examine training stability and convergence speed, we plot the training loss over epochs under different network densities in Fig. \ref{epoch}. The proposed model exhibits rapid and stable convergence for all density scenarios. The training loss decreases sharply in early phases and reaches a steady state within merely 10 to 15 epochs. 
+	
+	Such fast convergence can be attributed to the proposed interference-aware modeling and the edge-enhanced attention mechanism. By constructing a weighted conflict graph and explicitly incorporating physical edge weights into GAT attention calculation, the model efficiently captures the dominant interference relationships through local message passing. This enables each node to quickly infer the global interference structure from limited neighborhood interactions, thereby radically accelerating the learning of effective, collision-free scheduling policies.
+	
+	\subsection{Training Data Efficiency}
+	
+	We further investigate the training data efficiency by exploring model utility with different numbers of training samples. As shown in Fig.~\ref{samples}, our model achieves over $90\%$ of its peak performance with as few as 40 to 60 training samples. The performance gain saturates after the dataset size exceeds 100 samples. 
+	
+	For comparison, existing GNN-assisted works such as \textit{Spatial DL}, typically require up to 800,000 complex geographic layouts \cite{spatialDL} to train their models effectively. In contrast, our method significantly reduces the data requirement by over four orders of magnitude. This phenomenon demonstrates the strong inductive bias of our proposed GAT architecture. Instead of memorizing specific channel realizations or instantaneous locations, the model inherently learns generalizable topological rules for interference management. Consequently, the proposed approach enables extremely lightweight training and rapid deployment, making it highly practical for dynamically varying FANET swarms with limited historical data availability.
+	
+	\begin{figure}[!tb]
+		\centering
+		\includegraphics[width=\columnwidth]{performance_vs_samples}
+		\caption{Utility performance versus the training sample sizes.}
+		\label{samples}
+	\end{figure}
+	
+	\subsection{Model Scalability Across Network Scales}
+	
+	\begin{table}[htbp]
+		\centering
+		\caption{Model Scalability Across Network Scales}
+		\label{tab:generalization}
+		\setlength{\tabcolsep}{0.9em} 
+		\begin{tabular}{l c c c c}
+			\toprule
+			\multirow{2}{*}{\textbf{Training Scale}} & \multicolumn{4}{c}{\textbf{Testing Scale}} \\
+			\cmidrule(lr){2-5} 
+			& {$N=20$} & {$N=30$} & {$N=40$} & {$N=50$} \\
+			\midrule
+			$N=20$       & 24.46 & 32.89 & 42.71 & 47.48 \\
+			$N=30$       & 23.70 & 32.99 & 42.89 & 47.74 \\
+			$N=40$       & 7.52  & 32.98 & 42.91 & 47.79 \\
+			$N=50$       & 5.20  & 32.85 & 42.91 & 47.78 \\
+			Mixed ($N=20\sim50$)& 24.46 & 32.99 & 42.85 & 47.78 \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	We further investigate generalization performance of our proposed GAT-based scheduler across varying network scales. To this end, models trained exclusively on datasets with a specific density $N\in \{20, 30, 40, 50\}$ UAV nodes are then cross-evaluated on test sets with mismatched network sizes. As demonstrated in Table \ref{tab:generalization}, our proposed scheme demonstrates robust generalization capability. 
+	
+	Notably, models trained on small-scale networks can effectively generalize to large-scale networks. The model trained on $N=20$ nodes achieves over 99\% of the optimal performance (the benchmark where training and testing sets are consistent) when applied to a more dense testing network with $N=50$. This indicates that our GAT-based model learns interference management patterns which are robust to network scale and dynamic node density variations. 
+	
+	Conversely, model trained on $N=50$ large-scale networks suffers a 79\% degradation when adapting to sparse $N=20$ scenarios. This asymmetry can be attributed to the excessive reception fields in dense networks. Models trained in large-scale networks rely on dense neighborhood information, potentially overfitting to extensive interference patterns, making them difficult to adapt to sparser topologies.
+	
+	To summarize, the results demonstrate a pivotal practical advantage of our scheme: training on small-scale networks is sufficient for deployment on larger-scale scenarios, which can reduce the training overhead while maintaining scheduling performance.
+	
+	\textcolor{blue}{\subsection{Low-Overhead Scheduling via Quantized Distance CSI}
+		The initial evaluations assume the availability of perfect instantaneous CSI to compute the initial feature vector ${\bf x}_v = [\mathsf{SNR}_v]$. However, in dynamic FANETs with rapidly changing topologies, acquiring perfect CSI for $O(N^2)$ candidate links for scheduling incurs high signaling overhead.}
+	
+	\textcolor{blue}{To investigate the model performance under a low signaling cost, we explore the model performance with $q$-bit quantized geometric distances instead of perfect channel information. Specifically, considering $\mathsf{SNR}_{i,j} \propto d_{i,j}^{-\xi}$, nodes approximate path loss by coarsely quantizing the link distance $d_{i,j}$ into $2^q$ discrete levels, which is then used as the input feature for GAT scheduler. It should be noted that for evaluation comparability, quantized CSI are only used in scheduling decision, while the final network throughput is still calculated by actual instantaneous CSI of the activated links. This is a rational evaluation setting, which reflects a practical separation of the control and data planes: coarse location information is used in the MAC layer for low-overhead accessing, while precise channel estimation would be later performed at the PHY layer only for the selected active links prior to data transmission.}
+	
+	\begin{figure}[!tb]
+		\centering
+		\includegraphics[width=\columnwidth]{csi_imperfection}
+		\caption{Test utility under different CSI quantization levels and swarm densities.}
+		\label{csi_imperfection}
+	\end{figure}
+	
+	\textcolor{blue}{As depicted in Fig.~\ref{csi_imperfection}, the test utility of models relying on $q$-bit quantized geometric CSI is showed in solid lines. The dotted and dashed horizontal lines represent the upper bounds achieved using perfect instantaneous CSI and exact unquantized large-scale path loss respectively. Across all network densities, the performance of quantized CSI model converges at approximately 6 bits of quantization, achieving over 90\% of the throughput obtained with perfect CSI, indicating the robustness of our proposed model to ambiguous information.}
+	
+	\textcolor{blue}{The performance gap between the quantized model and the perfect CSI upper bound exhibits variations across different network densities. For sparse networks ($N=20$), the gap is relatively negligible, as spatial distances provide sufficient differentiation for link selection. As the density increases, perfect CSI model can better exploit small-scale fading for multi-user diversity, leading to a slightly larger gap. Interestingly, when $N=50$, the performance gap narrows again. This may be attributed to the fact that in such dense scenarios, the network becomes highly interference dominated, and the number of concurrent collision-free links is primarily restricted by the available spatial degrees of freedom. In this case, avoiding major spatial conflicts via large-scale distance information becomes more critical than exploiting local fading variations. Overall, these results indicate that using low-precision quantized CSI can still yield competitive scheduling performance, which is beneficial for relieving the channel measuring overhead in highly dynamic UAV swarms.}
+	
+	\section{Conclusion}\label{s5}
+	In this paper, we proposed a distributed link scheduling framework for dense UAV swarm networks. By constructing a quantized directed conflict graph, we accurately characterized the asymmetric spatial interference. Based on this model, we proposed an edge-enhanced GAT scheduler, where quantized interference weights are explicitly integrated into the attention mechanism. This design enables individual nodes to effectively perceive global network situational awareness through finite local message passing, significantly accelerating the learning process. Simulation results demonstrated that our approach realizes high spectral efficiency, consistently outperforming given benchmarks. Notably, our model exhibits remarkable data efficiency and structural scalability, achieving rapid convergence with fewer than 100 training samples and seamlessly generalizing from small-scale training to large-scale deployments. \textcolor{blue}{Furthermore, we demonstrated that using coarse quantized distance information can maintain high scheduling performance, providing a practical, low-overhead solution to reduce signaling costs in power-constrained dynamic FANETs.}
+	
+	\bibliographystyle{IEEEtran}
+	\bibliography{ref.bib}
+\end{document}

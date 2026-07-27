@@ -20,7 +20,7 @@ from utils.project_setup import load_config  # noqa: E402
 
 config = load_config("configs/paper.yaml")
 seeds = {"train": 10086, "val": 10087, "test": 10088}
-sizes = {"train": 500, "val": 128, "test": 128}
+sizes = {"train": 300, "val": 128, "test": 128}
 records = []
 for num_uav in (20, 30, 40, 50):
     expected = expected_dataset_metadata(config, num_uav, seeds, sizes)

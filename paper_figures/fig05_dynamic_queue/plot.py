@@ -58,6 +58,7 @@ def save_csv(rows: list[dict], out: Path) -> None:
 def draw(rows: list[dict], n: int, metric: str, out: Path) -> None:
     key, ylabel, ylim = METRICS[metric]
     with paper_style():
+        mpl.rcParams.update({"font.size": 9, "axes.labelsize": 9, "xtick.labelsize": 9, "ytick.labelsize": 9, "legend.fontsize": 8})
         fig, ax = plt.subplots(figsize=(3.5, 2.45))
         methods = list(dict.fromkeys(row["method"] for row in rows))
         for i, method in enumerate(methods):
@@ -72,7 +73,7 @@ def draw(rows: list[dict], n: int, metric: str, out: Path) -> None:
         ax.spines[["top", "right"]].set_visible(False)
         ax.grid(axis="x", visible=False)
         ax.legend(ncol=2, frameon=False, loc="best", fontsize=5.7)
-        out.parent.mkdir(parents=True, exist_ok=True); fig.savefig(out, format="eps"); plt.close(fig)
+        out.parent.mkdir(parents=True, exist_ok=True); fig.savefig(out, format="eps"); fig.savefig(out.with_suffix(".jpg"), format="jpg", dpi=300, bbox_inches="tight"); plt.close(fig)
 
 
 def main() -> None:

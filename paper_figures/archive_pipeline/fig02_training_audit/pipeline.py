@@ -24,7 +24,7 @@ FROZEN_REVISION = "ad2ee67d76e05effa4953db18ab677502ddd3ba1"
 DEFAULT_NODES = (20, 30, 40, 50)
 DEFAULT_TRAIN_SIZES = (50, 100, 200, 300, 500)
 SPLIT_SEEDS = {"train": 10086, "val": 10087, "test": 10088}
-POOL_SIZES = {"train": 500, "val": 128, "test": 128}
+POOL_SIZES = {"train": 300, "val": 128, "test": 128}
 
 os.environ.setdefault(
     "MPLCONFIGDIR", str(Path(os.environ.get("TMPDIR", "/tmp")) / "gnn-scheduling-mpl")
@@ -125,7 +125,7 @@ def prepare(nodes: list[int]) -> None:
         expected = _pool_metadata(num_uav)
         load_validated_dataset(train_val, expected, ("train", "val"))
         load_validated_dataset(test, expected, ("test",))
-        print(f"[N={num_uav}] canonical 500/128/128 pool verified", flush=True)
+        print(f"[N={num_uav}] canonical 300/128/128 pool verified", flush=True)
     if missing:
         _run([
             sys.executable,

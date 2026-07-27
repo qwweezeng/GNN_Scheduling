@@ -40,7 +40,7 @@ def main():
         "CSI_MODE": "perfect",
     })
     seeds = {"train": 10086, "val": 10087, "test": 10088}
-    sizes = {"train": 500, "val": 128, "test": 128}
+    sizes = {"train": 300, "val": 128, "test": 128}
     metadata = expected_dataset_metadata(config, 20, seeds, sizes)
     _, test_path = paper_dataset_paths(REPO / "datasets/paper", 20, seeds, sizes)
     state = load_validated_dataset(

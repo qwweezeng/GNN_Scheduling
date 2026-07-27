@@ -1,35 +1,140 @@
 #!/usr/bin/env python3
-"""Create Fig. 2a/b independent EPS files from seed-resolved training JSON."""
+"""Create Fig. 2 validation and training curves from seed-resolved logs.
+
+The script writes four EPS/JPG figure pairs:
+  - training loss
+  - hard validation rate without endpoint projection
+  - soft validation rate
+  - hard validation rate after endpoint-mutual projection
+
+The last two metrics must be present in logs produced by the updated trainer;
+old training reports are rejected instead of silently reusing an incompatible
+validation definition.
+"""
 from __future__ import annotations
-import argparse,csv,json,sys
+import argparse
+import csv
+import json
+import sys
 from collections import defaultdict
 from pathlib import Path
+
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-ROOT=Path(__file__).resolve().parents[2];HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(ROOT))
-from paper_figures.common.plot_style import NODE_COLORS,paper_style
-def load(nodes,seeds):
- rows=[]
- for n in nodes:
-  for s in seeds:
-   p=HERE/'data/raw'/f'N{n}'/f'seed{s}'/'training.json'
-   for x in json.loads(p.read_text())['per_epoch_logs']: rows.append({'num_uav':n,'seed':s,'epoch':int(x['epoch'])+1,'training_loss':float(x['train_loss']),'validation_binary_rate_mbps':float(x['val_utility'])*5})
- return rows
-def table(rows):
- out=[]
- for (n,e),v in sorted(__import__('itertools').groupby(sorted(rows,key=lambda r:(r['num_uav'],r['epoch'])),lambda r:(r['num_uav'],r['epoch']))):
-  z=list(v)
-  for key in ('training_loss','validation_binary_rate_mbps'):
-   a=np.array([r[key] for r in z]);out.append({'num_uav':n,'epoch':e,'metric':key,'mean':a.mean(),'sem':a.std(ddof=1)/np.sqrt(len(a))})
- return out
-def draw(rows,nodes,key,ylabel,out):
- with paper_style():
-  fig,ax=plt.subplots(figsize=(3.5,2.35))
-  for n in nodes:
-   z=[r for r in rows if r['num_uav']==n and r['metric']==key]; ax.plot([r['epoch'] for r in z],[r['mean'] for r in z],color=NODE_COLORS[n],label=f'N={n}')
-  ax.set_xlabel('Epoch');ax.set_ylabel(ylabel);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False);out.parent.mkdir(parents=True,exist_ok=True);fig.savefig(out,format='eps');plt.close(fig)
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from paper_figures.common.plot_style import NODE_COLORS, paper_style
+
+MARKER_EVERY = 3
+BANDWIDTH_MHZ = 5.0
+
+
+def load(nodes, seeds):
+    rows = []
+    for n in nodes:
+        for s in seeds:
+            report = HERE / 'data/raw' / f'N{n}' / f'seed{s}' / 'training.json'
+            for log in json.loads(report.read_text())['per_epoch_logs']:
+                missing = [
+                    key for key in ('val_soft_utility', 'val_projected_utility')
+                    if key not in log or log[key] is None
+                ]
+                if missing:
+                    raise ValueError(
+                        f'{report} lacks {missing}; rerun Fig. 2 training with '
+                        'the updated train/trainer.py before plotting.'
+                    )
+                rows.append({
+                    'num_uav': n,
+                    'seed': s,
+                    'epoch': int(log['epoch']) + 1,
+                    'training_loss': float(log['train_loss']),
+                    'validation_binary_rate_mbps': float(log['val_utility']) * BANDWIDTH_MHZ,
+                    'validation_soft_rate_mbps': float(log['val_soft_utility']) * BANDWIDTH_MHZ,
+                    'validation_projected_rate_mbps': float(log['val_projected_utility']) * BANDWIDTH_MHZ,
+                })
+    return rows
+
+
+def summarize(rows):
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[(row['num_uav'], row['epoch'])].append(row)
+    summary = []
+    for (n, epoch), replicas in sorted(grouped.items()):
+        for metric in (
+            'training_loss',
+            'validation_binary_rate_mbps',
+            'validation_soft_rate_mbps',
+            'validation_projected_rate_mbps',
+        ):
+            values = np.array([r[metric] for r in replicas])
+            summary.append({
+                'num_uav': n,
+                'epoch': epoch,
+                'metric': metric,
+                'mean': values.mean(),
+                'sem': values.std(ddof=1) / np.sqrt(len(values)),
+            })
+    return summary
+
+
+def draw(rows, nodes, metric, ylabel, output):
+    with paper_style():
+        mpl.rcParams.update({
+            'font.size': 9,
+            'axes.labelsize': 9,
+            'xtick.labelsize': 9,
+            'ytick.labelsize': 9,
+            'legend.fontsize': 8,
+        })
+        fig, ax = plt.subplots(figsize=(3.5, 2.35))
+        for n in nodes:
+            curve = [r for r in rows if r['num_uav'] == n and r['metric'] == metric]
+            ax.plot(
+                [r['epoch'] for r in curve],
+                [r['mean'] for r in curve],
+                'o-',
+                color=NODE_COLORS[n],
+                lw=1.0,
+                ms=3,
+                markevery=MARKER_EVERY,
+                label=f'N={n}',
+            )
+        ax.set(xlabel='Epoch', ylabel=ylabel)
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.grid(axis='both', linestyle='--', linewidth=0.5)
+        ax.legend(ncol=2, frameon=True, fontsize=8)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(output, format='eps')
+        fig.savefig(output.with_suffix('.jpg'), format='jpg', dpi=300, bbox_inches='tight')
+        plt.close(fig)
+
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('--nodes',default='20,30,40,50');p.add_argument('--seeds',default='0,1,2,3,4,5,6,7,8,9');a=p.parse_args();ns=[int(x)for x in a.nodes.split(',')if x];ss=[int(x)for x in a.seeds.split(',')if x];rows=table(load(ns,ss));q=HERE/'data/plotting';q.mkdir(parents=True,exist_ok=True)
- with (q/'fig02_epoch_summary.csv').open('w',newline='')as f:w=csv.DictWriter(f,fieldnames=rows[0]);w.writeheader();w.writerows(rows)
- draw(rows,ns,'training_loss','Training loss',HERE/'figures/fig02_training_loss.eps');draw(rows,ns,'validation_binary_rate_mbps','Validation binary rate (Mbit/s)',HERE/'figures/fig02_validation_binary_rate.eps')
-if __name__=='__main__':main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--nodes', default='20,30,40,50')
+    parser.add_argument('--seeds', default='0,1,2')
+    args = parser.parse_args()
+    nodes = [int(x) for x in args.nodes.split(',') if x]
+    seeds = [int(x) for x in args.seeds.split(',') if x]
+    rows = summarize(load(nodes, seeds))
+
+    plotting_dir = HERE / 'data/plotting'
+    plotting_dir.mkdir(parents=True, exist_ok=True)
+    with (plotting_dir / 'fig02_epoch_summary.csv').open('w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=rows[0])
+        writer.writeheader()
+        writer.writerows(rows)
+
+    draw(rows, nodes, 'training_loss', 'Training loss (bit/s/Hz)', HERE / 'figures/fig02_training_loss.eps')
+    draw(rows, nodes, 'validation_binary_rate_mbps', 'Validation hard rate without projection (Mbps)', HERE / 'figures/fig02_validation_binary_rate.eps')
+    draw(rows, nodes, 'validation_soft_rate_mbps', 'Soft validation rate (Mbps)', HERE / 'figures/fig02_validation_soft_rate.eps')
+    draw(rows, nodes, 'validation_projected_rate_mbps', 'Projected hard validation rate (Mbps)', HERE / 'figures/fig02_validation_projected_rate.eps')
+
+
+if __name__ == '__main__':
+    main()

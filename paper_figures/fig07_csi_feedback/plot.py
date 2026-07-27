@@ -22,9 +22,10 @@ def main():
   with(q/f'fig07_{name}.csv').open('w',newline='')as f:w=csv.DictWriter(f,fieldnames=rows[0]);w.writeheader();w.writerows(rows)
  def draw(rows,ylabel,stem):
   with paper_style():
+   mpl.rcParams.update({"font.size":9,"axes.labelsize":9,"xtick.labelsize":9,"ytick.labelsize":9,"legend.fontsize":8})
    fig,ax=plt.subplots(figsize=(3.5,2.35))
    for n in ns:
     z={r['mode']:r['value']for r in rows if r['num_uav']==n};x=np.arange(len(BITS));ax.plot(x,[z[f'quantized_{b}bit']for b in BITS],marker='o',ms=3,color=NODE_COLORS[n],label=f'N={n}');ax.hlines(z['perfect'] if 'perfect'in z else z['latest'],-.15,3.15,color=NODE_COLORS[n],ls=':',lw=.8);ax.hlines(z['large_scale'],-.15,3.15,color=NODE_COLORS[n],ls='--',lw=.8)
-   ax.set(xticks=range(4),xticklabels=[f'{b}-bit'for b in BITS],xlabel='CSI feedback precision',ylabel=ylabel);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False);(HERE/'figures').mkdir(exist_ok=True);fig.savefig(HERE/'figures'/stem,format='eps');plt.close(fig)
+   ax.set(xticks=range(4),xticklabels=[f'{b}-bit'for b in BITS],xlabel='CSI feedback precision',ylabel=ylabel);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False);(HERE/'figures').mkdir(exist_ok=True);out=HERE/'figures'/stem;fig.savefig(out,format='eps');fig.savefig(out.with_suffix('.jpg'),format='jpg',dpi=300,bbox_inches='tight');plt.close(fig)
  draw(r4,'Test sum rate (Mbit/s)','fig07_chapter4_csi_rate.eps');draw(r5,'Average queue backlog (Mbit)','fig07_chapter5_gat_mp_backlog.eps')
 if __name__=='__main__':main()

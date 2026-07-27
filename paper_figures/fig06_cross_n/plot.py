@@ -13,8 +13,9 @@ def main():
  q=HERE/'data/plotting';q.mkdir(parents=True,exist_ok=True)
  with(q/'fig06_cross_n.csv').open('w',newline='')as f:w=csv.DictWriter(f,fieldnames=rows[0]);w.writeheader();w.writerows(rows)
  with paper_style():
+  mpl.rcParams.update({"font.size":9,"axes.labelsize":9,"xtick.labelsize":9,"ytick.labelsize":9,"legend.fontsize":8})
   fig,ax=plt.subplots(figsize=(3.5,2.35))
   for tr in ns:
    z=[r for r in rows if r['training_num_uav']==tr];ax.plot([r['test_num_uav']for r in z],[r['average_sum_rate_mbps']for r in z],marker='o',ms=3,label=f'Train N={tr}',color=NODE_COLORS[int(tr)])
-  ax.set(xlabel='Test number of UAVs',ylabel='Average sum rate (Mbit/s)');ax.set_xticks(ns);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False,fontsize=6);(HERE/'figures').mkdir(exist_ok=True);fig.savefig(HERE/'figures/fig06_cross_network_generalization.eps',format='eps');plt.close(fig)
+  ax.set(xlabel='Test number of UAVs',ylabel='Average sum rate (Mbit/s)');ax.set_xticks(ns);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False,fontsize=6);(HERE/'figures').mkdir(exist_ok=True);fig.savefig(HERE/'figures/fig06_cross_network_generalization.eps',format='eps');fig.savefig(HERE/'figures/fig06_cross_network_generalization.jpg',format='jpg',dpi=300,bbox_inches='tight');plt.close(fig)
 if __name__=='__main__':main()

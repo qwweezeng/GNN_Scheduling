@@ -8,6 +8,7 @@ import torch
 from torch.utils.tensorboard import SummaryWriter
 
 from models.model import calculate_achievable_rate
+from utils.feasibility import decode_endpoint_mutual_matching
 from utils.queue_features import relative_queue_feature
 
 
@@ -100,6 +101,26 @@ class Trainer:
         return pi * (queues > 0).to(pi.dtype).unsqueeze(1)
 
     @staticmethod
+    def _endpoint_conflict_penalty(pi, links):
+        """Penalize simultaneous soft activation of shared-endpoint links."""
+        values = pi.reshape(-1)
+        endpoints = links.to(values.device)
+        if values.numel() < 2 or endpoints.numel() == 0:
+            return values.new_zeros(())
+        shared = (
+            (endpoints[:, None, 0] == endpoints[None, :, 0])
+            | (endpoints[:, None, 0] == endpoints[None, :, 1])
+            | (endpoints[:, None, 1] == endpoints[None, :, 0])
+            | (endpoints[:, None, 1] == endpoints[None, :, 1])
+        )
+        upper = torch.triu(shared, diagonal=1)
+        pair_indices = upper.nonzero(as_tuple=False)
+        if pair_indices.numel() == 0:
+            return values.new_zeros(())
+        pair_products = values[pair_indices[:, 0]] * values[pair_indices[:, 1]]
+        return pair_products.sum() / max(1, values.numel())
+
+    @staticmethod
     def _model_output(model, x, edge_index, edge_weights, use_power_control,
                       use_ste=False):
         result = model(x, edge_index, edge_weights, use_ste=use_ste)
@@ -160,6 +181,50 @@ class Trainer:
 
         model.decision_threshold = best_threshold
         return best_threshold
+
+    @staticmethod
+    def _direct_rate_priority(pi, state):
+        tx, rx = state.links[:, 0], state.links[:, 1]
+        snr = state.signal_power[tx, rx].cpu() / state.noise_power
+        return (
+            pi.reshape(-1).float().cpu()
+            * torch.log2(1.0 + snr / state.snr_gap).float()
+        )
+
+    def _evaluate_channel_validation(self, model, dataset, device):
+        """Return soft, raw-hard, and projected-hard validation utilities."""
+        model.eval().to(device)
+        totals = {"soft": 0.0, "hard": 0.0, "projected": 0.0}
+        with torch.no_grad():
+            for state in dataset:
+                pi, _ = self._model_output(
+                    model,
+                    state.vertex_features[:, :1].to(device),
+                    state.edge_index.to(device),
+                    state.edge_weights.to(device),
+                    False,
+                )
+                soft_rates = calculate_achievable_rate(
+                    pi, state, binary=False
+                )
+                hard = (pi >= 0.5).float()
+                hard_rates = calculate_achievable_rate(
+                    hard, state, binary=True, detach_hard=True
+                )
+                projected, _ = decode_endpoint_mutual_matching(
+                    hard.cpu(),
+                    state.links,
+                    priorities=self._direct_rate_priority(pi, state),
+                    max_rounds=1,
+                )
+                projected_rates = calculate_achievable_rate(
+                    projected.to(device), state, binary=True, detach_hard=True
+                )
+                totals["soft"] += float(soft_rates.sum().item())
+                totals["hard"] += float(hard_rates.sum().item())
+                totals["projected"] += float(projected_rates.sum().item())
+        count = max(len(dataset), 1)
+        return {key: value / count for key, value in totals.items()}
 
     def evaluate(self, model, dataset, device=None, use_power_control=False,
                  use_queue=False):
@@ -300,7 +365,8 @@ class Trainer:
         return avg_utility
 
     def train(self, num_epochs, train_dataset, val_dataset, eval_interval=10,
-              lr_scheduler=None, use_power_control=False, use_queue=None):
+              lr_scheduler=None, use_power_control=False, use_queue=None,
+              use_ste=False, endpoint_penalty_weight=0.0):
         use_queue = self.use_queue if use_queue is None else use_queue
         model, optimizer, device = self.model, self.optimizer, self.device
         model.to(device)
@@ -334,8 +400,8 @@ class Trainer:
                 edge_index = state.edge_index.to(device)
                 edge_weights = state.edge_weights.to(device)
                 pi, alpha = self._model_output(
-                    model, x, edge_index, edge_weights, use_power_control,
-                    use_ste=use_queue,
+                    model, x, edge_index, edge_weights,                     use_power_control,
+                    use_ste=(use_queue or use_ste),
                 )
                 if alpha is not None:
                     alpha_means.append(alpha.mean().item())
@@ -356,6 +422,14 @@ class Trainer:
                 else:
                     utility = rates.sum()
                     loss = -utility
+
+                soft_probabilities = getattr(
+                    model, "latest_soft_probabilities", pi
+                )
+                endpoint_penalty = self._endpoint_conflict_penalty(
+                    soft_probabilities, state.links
+                )
+                loss = loss + float(endpoint_penalty_weight) * endpoint_penalty
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -391,6 +465,7 @@ class Trainer:
                 "alpha_mean": float(np.mean(alpha_means)) if alpha_means else None,
             }
             val_utility = val_alpha = None
+            channel_val_metrics = {}
             should_evaluate = (epoch + 1) % eval_interval == 0 or epoch == num_epochs - 1
             if should_evaluate:
                 if use_queue:
@@ -404,6 +479,10 @@ class Trainer:
                     val_utility, val_alpha = val_result
                 else:
                     val_utility, val_alpha = val_result, 1.0
+                if not use_queue:
+                    channel_val_metrics = self._evaluate_channel_validation(
+                        model, val_dataset, device
+                    )
                 if val_utility > best_utility + 1e-9:
                     best_utility = val_utility
                     best_epoch = epoch
@@ -432,6 +511,10 @@ class Trainer:
                     f"val_{k}": float(v)
                     for k, v in self.last_eval_metrics.items()
                 })
+                epoch_log.update({
+                    f"val_{key}_utility": float(value)
+                    for key, value in channel_val_metrics.items()
+                })
             logs.append(epoch_log)
             for key, value in epoch_log.items():
                 if key != "epoch" and value is not None:
@@ -448,6 +531,8 @@ class Trainer:
                     f"diagnostics={self.last_eval_metrics}"
                 )
 
+        final_state = copy.deepcopy(model.state_dict())
+        final_threshold = float(getattr(model, "decision_threshold", 0.5))
         if best_state is not None:
             model.load_state_dict(best_state)
             model.decision_threshold = best_threshold
@@ -458,6 +543,8 @@ class Trainer:
         writer.close()
         return {
             "model": model,
+            "final_model_state_dict": final_state,
+            "final_decision_threshold": final_threshold,
             "per_epoch_logs": logs,
             "best_val_util": best_utility,
             "best_epoch": best_epoch,

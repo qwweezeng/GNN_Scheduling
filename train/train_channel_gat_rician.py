@@ -36,7 +36,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/paper.yaml")
     parser.add_argument("--num_uav", type=int, default=20)
-    parser.add_argument("--train_size", type=int, default=500)
+    parser.add_argument("--train_size", type=int, default=300)
     parser.add_argument("--val_size", type=int, default=128)
     parser.add_argument("--test_size", type=int, default=128)
     parser.add_argument("--epochs", type=int, default=30)
@@ -62,7 +62,11 @@ def parse_args():
     )
     parser.add_argument(
         "--checkpoint_out", default="",
-        help="Optional checkpoint path; defaults to the production model path.",
+        help="Optional best-validation checkpoint path; defaults to the production model path.",
+    )
+    parser.add_argument(
+        "--final-checkpoint_out", default="",
+        help="Optional checkpoint path for the final training epoch before best-model restoration.",
     )
     parser.add_argument(
         "--dataset-root", default="datasets/paper",
@@ -73,6 +77,23 @@ def parse_args():
         help="Optional JSON report path; defaults to the production report path.",
     )
     parser.add_argument("--force_regenerate", action="store_true")
+    parser.add_argument(
+        "--device", default="auto", choices=("auto", "cpu", "cuda"),
+        help="Training device; auto selects CUDA when available.",
+    )
+    parser.add_argument(
+        "--gpu-id", type=int, default=0,
+        help="CUDA device index used when --device is auto or cuda.",
+    )
+    parser.add_argument("--use-ste", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--stochastic-ste", action=argparse.BooleanOptionalAction, default=False,
+        help="Sample Bernoulli hard actions during STE training.",
+    )
+    parser.add_argument(
+        "--endpoint-penalty-weight", type=float, default=0.0,
+        help="Weight for pairwise shared-endpoint activation penalty.",
+    )
     return parser.parse_args()
 
 
@@ -136,11 +157,13 @@ def _load_or_generate(config, args):
 def _output_audit(model, dataset):
     probabilities, binary_counts, link_counts = [], [], []
     hard_utilities, all_active_utilities = [], []
+    device = next(model.parameters()).device
     model.eval()
     with torch.no_grad():
         for state in dataset:
             pi, _ = model(
-                state.vertex_features[:, :1], state.edge_index, state.edge_weights
+                state.vertex_features[:, :1].to(device),
+                state.edge_index.to(device), state.edge_weights.to(device)
             )
             value = pi.reshape(-1).cpu()
             hard = (value >= 0.5).float().unsqueeze(1)
@@ -222,9 +245,19 @@ def main():
     np.random.seed(model_seed)
     torch.manual_seed(model_seed)
     model = build_gat_scheduler(config, raw_node_dim=1)
+    model.stochastic_ste = bool(args.stochastic_ste)
+    if args.use_ste and args.stochastic_ste:
+        final_layer = model.final_scheduler[-1]
+        torch.nn.init.constant_(final_layer.bias, 0.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
+    device = (
+        torch.device(f"cuda:{args.gpu_id}")
+        if args.device in {"auto", "cuda"} and torch.cuda.is_available()
+        else args.device if args.device != "auto" else "cpu"
+    )
+    print(f"[train] device={device}", flush=True)
     trainer = Trainer(
-        model, optimizer, device="cpu", use_queue=False,
+        model, optimizer, device=device, gpu_id=args.gpu_id, use_queue=False,
         log_dir="logs/channel_gat_rician",
     )
     trained = trainer.train(
@@ -233,6 +266,8 @@ def main():
         val_dataset=val_set,
         eval_interval=1,
         use_queue=False,
+        use_ste=args.use_ste,
+        endpoint_penalty_weight=args.endpoint_penalty_weight,
     )
     test_utility = float(trainer.evaluate(model, test_set, use_queue=False))
     audit = _output_audit(model, test_set)
@@ -240,6 +275,11 @@ def main():
         channel_checkpoint_path(config, args.num_uav)
     )
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    final_checkpoint_path = (
+        Path(args.final_checkpoint_out) if args.final_checkpoint_out else None
+    )
+    if final_checkpoint_path is not None:
+        final_checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {
         "model_version": "channel_gat_v1",
         "model_state_dict": model.state_dict(),
@@ -263,6 +303,11 @@ def main():
             "SEED": int(args.seed),
             "MODEL_SEED": int(model_seed),
         },
+        "checkpoint_selection": "best_validation",
+        "best_checkpoint": str(checkpoint_path),
+        "final_checkpoint": (
+            str(final_checkpoint_path) if final_checkpoint_path is not None else None
+        ),
         "best_epoch": trained["best_epoch"],
         "best_val_utility": trained["best_val_util"],
         "test_utility": test_utility,
@@ -292,8 +337,18 @@ def main():
             f"was not overwritten. See {report_path}: {audit}"
         )
     torch.save(checkpoint, checkpoint_path)
+    if final_checkpoint_path is not None:
+        final_checkpoint = {
+            **checkpoint,
+            "checkpoint_selection": "final_epoch",
+            "selected_epoch": int(args.epochs) - 1,
+            "model_state_dict": trained["final_model_state_dict"],
+            "decision_threshold": trained["final_decision_threshold"],
+        }
+        torch.save(final_checkpoint, final_checkpoint_path)
     print(json.dumps({
         "checkpoint": str(checkpoint_path),
+        "final_checkpoint": str(final_checkpoint_path) if final_checkpoint_path else None,
         "report": str(report_path),
         "test_utility": test_utility,
         "output_audit": audit,

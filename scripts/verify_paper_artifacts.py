@@ -42,7 +42,7 @@ def main():
     for num_uav in _csv_ints(args.num_uavs):
         config = dict(base, NUM_UAV=num_uav)
         seeds = {"train": 10086, "val": 10087, "test": 10088}
-        sizes = {"train": 500, "val": 128, "test": 128}
+        sizes = {"train": 300, "val": 128, "test": 128}
         expected = expected_dataset_metadata(config, num_uav, seeds, sizes)
         train_val, test = paper_dataset_paths(
             Path("datasets/paper"), num_uav, seeds, sizes

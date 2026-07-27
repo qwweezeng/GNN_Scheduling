@@ -1,30 +1,126 @@
 #!/usr/bin/env python3
 """Render the two independent Fig. 3 activation-audit EPS panels."""
 from __future__ import annotations
-import argparse,csv,json,sys
+import argparse
+import csv
+import json
+import sys
 from collections import defaultdict
 from pathlib import Path
+
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-ROOT=Path(__file__).resolve().parents[2];HERE=Path(__file__).resolve().parent;sys.path.insert(0,str(ROOT))
-from paper_figures.common.plot_style import NODE_COLORS,paper_style
+from matplotlib.lines import Line2D
+
+ROOT = Path(__file__).resolve().parents[2]
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from paper_figures.common.plot_style import NODE_COLORS, paper_style
+
+MARKER_EVERY = 5
+PANEL_SIZE = (2.0, 2.35)
+LINE_WIDTH = 1.0
+MARKER_SIZE = 2.5
+
+
+def compact_legend(ax, nodes, include_line_style):
+    handles = [Line2D([], [], color=NODE_COLORS[n], lw=LINE_WIDTH, label=f'N={n}') for n in nodes]
+    if include_line_style:
+        handles.extend([
+            Line2D([], [], color='black', lw=LINE_WIDTH, label='mean'),
+            Line2D([], [], color='black', lw=LINE_WIDTH, ls='--', label='std'),
+        ])
+    ax.legend(
+        handles=handles,
+        ncol=2,
+        loc='upper right',
+        frameon=True,
+        fontsize=5.8,
+        handlelength=1.25,
+        handletextpad=0.35,
+        columnspacing=0.65,
+        borderpad=0.35,
+        labelspacing=0.35,
+    )
+
+
+def save(fig, stem):
+    fig.savefig(HERE / 'figures' / f'{stem}.eps', format='eps')
+    fig.savefig(HERE / 'figures' / f'{stem}.jpg', format='jpg', dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
 def main():
- p=argparse.ArgumentParser();p.add_argument('--source',default='../fig02_training_curves/data/raw');p.add_argument('--nodes',default='20,30,40,50');p.add_argument('--seeds',default='0,1,2,3,4,5,6,7,8,9');a=p.parse_args();src=(HERE/a.source).resolve();ns=[int(x)for x in a.nodes.split(',')if x];ss=[int(x)for x in a.seeds.split(',')if x];g=defaultdict(list)
- for n in ns:
-  for s in ss:
-   for r in json.loads((src/f'N{n}'/f'seed{s}'/'training.json').read_text())['per_epoch_logs']:g[(n,int(r['epoch'])+1)].append(r)
- rows=[]
- for (n,e),v in sorted(g.items()):
-  rows.append({'num_uav':n,'epoch':e,'pi_mean':np.mean([x['pi_mean']for x in v]),'pi_std':np.mean([x['pi_std']for x in v]),'binary_active_fraction':np.mean([x['binary_active_fraction']for x in v])})
- q=HERE/'data/plotting';q.mkdir(parents=True,exist_ok=True)
- with(q/'fig03_epoch_audit.csv').open('w',newline='')as f:w=csv.DictWriter(f,fieldnames=rows[0]);w.writeheader();w.writerows(rows)
- with paper_style():
-  fig,ax=plt.subplots(figsize=(3.5,2.35))
-  for n in ns:
-   z=[r for r in rows if r['num_uav']==n];ax.plot([r['epoch']for r in z],[r['pi_mean']for r in z],color=NODE_COLORS[n],label=f'N={n}, mean');ax.plot([r['epoch']for r in z],[r['pi_std']for r in z],color=NODE_COLORS[n],ls='--',label=f'N={n}, std.')
-  ax.set(xlabel='Epoch',ylabel='Continuous activation statistic');ax.set_ylim(0,1);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False,fontsize=5.7);(HERE/'figures').mkdir(exist_ok=True);fig.savefig(HERE/'figures/fig03_continuous_pi_statistics.eps',format='eps');plt.close(fig)
-  fig,ax=plt.subplots(figsize=(3.5,2.35))
-  for n in ns:
-   z=[r for r in rows if r['num_uav']==n];ax.plot([r['epoch']for r in z],[r['binary_active_fraction']for r in z],color=NODE_COLORS[n],label=f'N={n}')
-  ax.set(xlabel='Epoch',ylabel='Fraction of active links');ax.set_ylim(0,1);ax.spines[['top','right']].set_visible(False);ax.grid(axis='x',visible=False);ax.legend(ncol=2,frameon=False);fig.savefig(HERE/'figures/fig03_binary_active_fraction.eps',format='eps');plt.close(fig)
-if __name__=='__main__':main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--source', default='../fig02_training_curves/data/raw')
+    parser.add_argument('--nodes', default='20,30,40,50')
+    parser.add_argument('--seeds', default='0,1,2')
+    args = parser.parse_args()
+    source = (HERE / args.source).resolve()
+    nodes = [int(x) for x in args.nodes.split(',') if x]
+    seeds = [int(x) for x in args.seeds.split(',') if x]
+
+    grouped = defaultdict(list)
+    for n in nodes:
+        for seed in seeds:
+            report = source / f'N{n}' / f'seed{seed}' / 'training.json'
+            for log in json.loads(report.read_text())['per_epoch_logs']:
+                grouped[(n, int(log['epoch']) + 1)].append(log)
+
+    rows = []
+    for (n, epoch), replicas in sorted(grouped.items()):
+        rows.append({
+            'num_uav': n,
+            'epoch': epoch,
+            'pi_mean': np.mean([r['pi_mean'] for r in replicas]),
+            'pi_std': np.mean([r['pi_std'] for r in replicas]),
+            'binary_active_fraction': np.mean([r['binary_active_fraction'] for r in replicas]),
+        })
+
+    plotting_dir = HERE / 'data/plotting'
+    plotting_dir.mkdir(parents=True, exist_ok=True)
+    with (plotting_dir / 'fig03_epoch_audit.csv').open('w', newline='') as file:
+        writer = csv.DictWriter(file, fieldnames=rows[0])
+        writer.writeheader()
+        writer.writerows(rows)
+    (HERE / 'figures').mkdir(exist_ok=True)
+
+    with paper_style():
+        mpl.rcParams.update({'font.size': 9, 'axes.labelsize': 8.5, 'xtick.labelsize': 8, 'ytick.labelsize': 8})
+        fig, ax = plt.subplots(figsize=PANEL_SIZE)
+        for n in nodes:
+            curve = [r for r in rows if r['num_uav'] == n]
+            epochs = [r['epoch'] for r in curve]
+            ax.plot(epochs, [r['pi_mean'] for r in curve], color=NODE_COLORS[n], lw=LINE_WIDTH, marker='o', ms=MARKER_SIZE, markevery=MARKER_EVERY)
+            ax.plot(epochs, [r['pi_std'] for r in curve], color=NODE_COLORS[n], lw=LINE_WIDTH, ls='--', marker='o', ms=MARKER_SIZE, markevery=MARKER_EVERY)
+        ymax = max([r['pi_mean'] for r in rows] + [r['pi_std'] for r in rows])
+        ax.set_ylim(0, max(0.20, ymax * 1.15))
+        ax.set(xlabel='Epoch', ylabel=r'Continuous $\pi$')
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.grid(axis='both', linestyle='--', linewidth=0.5)
+        compact_legend(ax, nodes, include_line_style=True)
+        save(fig, 'fig03_continuous_pi_statistics')
+
+    with paper_style():
+        mpl.rcParams.update({'font.size': 9, 'axes.labelsize': 8.5, 'xtick.labelsize': 8, 'ytick.labelsize': 8})
+        fig, ax = plt.subplots(figsize=PANEL_SIZE)
+        for n in nodes:
+            curve = [r for r in rows if r['num_uav'] == n]
+            ax.plot(
+                [r['epoch'] for r in curve],
+                [r['binary_active_fraction'] for r in curve],
+                'o-', color=NODE_COLORS[n], lw=LINE_WIDTH, ms=MARKER_SIZE,
+                markevery=MARKER_EVERY,
+            )
+        ymax = max(r['binary_active_fraction'] for r in rows)
+        ax.set_ylim(0, max(0.10, ymax * 1.2))
+        ax.set(xlabel='Epoch', ylabel='Active-link fraction')
+        ax.spines[['top', 'right']].set_visible(False)
+        ax.grid(axis='both', linestyle='--', linewidth=0.5)
+        compact_legend(ax, nodes, include_line_style=False)
+        save(fig, 'fig03_binary_active_fraction')
+
+
+if __name__ == '__main__':
+    main()

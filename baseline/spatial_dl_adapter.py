@@ -245,10 +245,23 @@ def run_spatial_dl_checkpoint_isolated(
     seed=0,
     conda_env="gnn-spatial-dl-legacy",
 ):
-    """Run the checkpoint in its conda env without modifying main PyTorch."""
+    """Run the checkpoint in an isolated TensorFlow legacy environment.
+
+    Set ``SPATIAL_DL_PYTHON`` to an explicit Python executable when a managed
+    environment such as ``uv`` supplies TensorFlow; otherwise use the retained
+    conda environment name.
+    """
+    python_executable = os.environ.get("SPATIAL_DL_PYTHON", "")
     conda = shutil.which("conda")
-    if conda is None:
-        raise RuntimeError("conda is required to launch the isolated Spatial-DL environment")
+    if not python_executable and conda is None:
+        raise RuntimeError(
+            "Spatial-DL needs conda or an explicit SPATIAL_DL_PYTHON "
+            "TensorFlow environment"
+        )
+    if python_executable and not Path(python_executable).is_file():
+        raise FileNotFoundError(
+            f"SPATIAL_DL_PYTHON is not an executable file: {python_executable}"
+        )
     worker = Path(__file__).with_name("spatial_dl_worker.py").resolve()
     if not worker.is_file():
         raise FileNotFoundError(f"missing Spatial-DL subprocess worker: {worker}")
@@ -267,13 +280,20 @@ def run_spatial_dl_checkpoint_isolated(
             "MPLCONFIGDIR": str(directory / "matplotlib"),
             "TF_CPP_MIN_LOG_LEVEL": "3",
         })
-        command = [
-            conda,
-            "run",
-            "--no-capture-output",
-            "-n",
-            str(conda_env),
-            "python",
+        if python_executable:
+            command = [python_executable]
+            runtime_label = python_executable
+        else:
+            command = [
+                conda,
+                "run",
+                "--no-capture-output",
+                "-n",
+                str(conda_env),
+                "python",
+            ]
+            runtime_label = conda_env
+        command.extend([
             str(worker),
             "--input",
             str(input_path),
@@ -283,7 +303,7 @@ def run_spatial_dl_checkpoint_isolated(
             str(Path(source_root).resolve()),
             "--seed",
             str(int(seed)),
-        ]
+        ])
         completed = subprocess.run(
             command,
             cwd=str(worker.parents[1]),
@@ -295,7 +315,7 @@ def run_spatial_dl_checkpoint_isolated(
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()
             raise RuntimeError(
-                f"isolated Spatial-DL checkpoint process failed ({conda_env}): {detail}"
+                f"isolated Spatial-DL checkpoint process failed ({runtime_label}): {detail}"
             )
         if not output_path.is_file():
             raise RuntimeError("isolated Spatial-DL process returned no schedule artifact")

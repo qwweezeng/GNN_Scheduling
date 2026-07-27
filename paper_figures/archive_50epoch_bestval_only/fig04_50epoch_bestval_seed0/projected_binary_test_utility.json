@@ -1,0 +1,182 @@
+[
+  {
+    "num_uav": 40,
+    "training_samples": 10,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 162.6408322993666,
+    "test_binary_projected_utility_sem_mbps": 5.562435582419652,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 20,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 158.95524815656245,
+    "test_binary_projected_utility_sem_mbps": 5.494460128605263,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 30,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 170.61661172658205,
+    "test_binary_projected_utility_sem_mbps": 4.1122678743473475,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 40,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 174.01687771081924,
+    "test_binary_projected_utility_sem_mbps": 3.3767498696965372,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 50,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 171.88516665250063,
+    "test_binary_projected_utility_sem_mbps": 3.678376411289704,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 60,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 174.46336962282658,
+    "test_binary_projected_utility_sem_mbps": 3.278158148686383,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 80,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 176.92892394959927,
+    "test_binary_projected_utility_sem_mbps": 2.6829664365238366,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 100,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 174.63378213346004,
+    "test_binary_projected_utility_sem_mbps": 3.2727912485910746,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 200,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 177.3259151726961,
+    "test_binary_projected_utility_sem_mbps": 2.64698504122589,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 40,
+    "training_samples": 300,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 177.37499065697193,
+    "test_binary_projected_utility_sem_mbps": 2.6393876599803705,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 10,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 176.09555383212864,
+    "test_binary_projected_utility_sem_mbps": 6.920289214495188,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 20,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 201.046503148973,
+    "test_binary_projected_utility_sem_mbps": 4.112242861911571,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 30,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 201.15931499749422,
+    "test_binary_projected_utility_sem_mbps": 3.9592180696441166,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 40,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 200.4575714841485,
+    "test_binary_projected_utility_sem_mbps": 3.9710173058857925,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 50,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 198.852255679667,
+    "test_binary_projected_utility_sem_mbps": 4.073221485069754,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 60,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 202.05463778227568,
+    "test_binary_projected_utility_sem_mbps": 3.7149173139044427,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 80,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 201.42038401216269,
+    "test_binary_projected_utility_sem_mbps": 3.7044184914274405,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 100,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 201.20397684164345,
+    "test_binary_projected_utility_sem_mbps": 3.664214770607336,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 200,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 205.81795156002045,
+    "test_binary_projected_utility_sem_mbps": 2.6557733593192565,
+    "fixed_test_topologies": 128
+  },
+  {
+    "num_uav": 50,
+    "training_samples": 300,
+    "model_seed": 0,
+    "epochs": 50,
+    "test_binary_projected_utility_mbps": 205.75641363859177,
+    "test_binary_projected_utility_sem_mbps": 2.657926980246574,
+    "fixed_test_topologies": 128
+  }
+]

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+import torch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -170,8 +171,17 @@ def main():
     parser.add_argument("--skip_mws", action="store_true")
     parser.add_argument("--methods", default="")
     parser.add_argument("--output_dir", default="")
+    parser.add_argument(
+        "--device", default="auto", choices=("auto", "cpu", "cuda"),
+        help="GAT inference device; auto selects CUDA when available.",
+    )
     args = parser.parse_args()
 
+    device = (
+        "cuda" if args.device == "auto" and torch.cuda.is_available()
+        else args.device if args.device != "auto" else "cpu"
+    )
+    print(f"[evaluate] GAT device={device}", flush=True)
     requested = (
         set(comma_list(args.methods, str)) if args.methods else set()
     )
@@ -207,12 +217,12 @@ def main():
                 config,
                 args.channel_gat_checkpoint,
                 args.channel_model_num_uav,
-                device="cpu",
+                device=device,
                 allow_power_transfer=args.allow_train_test_power_mismatch,
             )
         else:
             channel_model, channel_path = load_channel_gat(
-                config, args.channel_model_num_uav, device="cpu"
+                config, args.channel_model_num_uav, device=device
             )
     else:
         channel_model, channel_path = None, None

@@ -10,7 +10,6 @@ import matplotlib as mpl
 METHOD_ORDER = [
     "Random",
     "Top-SNR",
-    "LocalMax",
     "Local Greedy",
     "Spatial DL",
     "FPLinQ",
@@ -21,7 +20,6 @@ METHOD_ORDER = [
 METHOD_COLORS = {
     "Random": "#D4D4D4",
     "Top-SNR": "#B4C0E4",
-    "LocalMax": "#B4C0E4",
     "Local Greedy": "#7884B4",
     "Spatial DL": "#CDB8D6",
     "FPLinQ": "#484878",
@@ -121,6 +119,9 @@ RC_PARAMS = {
     "axes.labelsize": 8.0,
     "axes.titlesize": 8.5,
     "legend.fontsize": 7.0,
+    "legend.framealpha": 1.0,
+    "legend.facecolor": "white",
+    "legend.edgecolor": "#808080",
     "xtick.labelsize": 7.5,
     "ytick.labelsize": 7.5,
     "axes.linewidth": 0.8,
@@ -128,11 +129,11 @@ RC_PARAMS = {
     "patch.linewidth": 0.65,
     "axes.grid": True,
     "axes.axisbelow": True,
-    # EPS has no transparency; use an explicit light color instead of alpha.
     "grid.color": "#E1E1E1",
     "grid.alpha": 1.0,
     "grid.linestyle": "--",
     "grid.linewidth": 0.5,
+    "axes.grid.which": "both",
     "figure.dpi": 150,
     "savefig.dpi": 600,
     "savefig.bbox": "tight",

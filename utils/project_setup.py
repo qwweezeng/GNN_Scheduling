@@ -11,6 +11,23 @@ from utils.network_generate import NetworkGenerator
 
 
 MODEL_DIR = Path("results/models/paper")
+PROPOSED_GAT_CHECKPOINT_ROOT = Path("checkpoints/paper/proposed_gat/rician_K5_tx10")
+
+
+def proposed_gat_checkpoint_dir(
+    num_uav: int,
+    model_seed: int,
+    training_scope: str,
+) -> Path:
+    """Return the canonical directory for a reproducible Proposed-GAT run."""
+    if not training_scope:
+        raise ValueError("training_scope must be a non-empty provenance label")
+    return (
+        PROPOSED_GAT_CHECKPOINT_ROOT
+        / f"N{int(num_uav)}"
+        / f"seed{int(model_seed)}"
+        / training_scope
+    )
 
 
 def load_config(path="configs/paper.yaml"):

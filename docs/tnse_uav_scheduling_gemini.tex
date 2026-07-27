@@ -1,0 +1,451 @@
+\documentclass[letterpaper,journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{algorithm}
+\usepackage{array}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{textcomp}
+\usepackage{stfloats,dsfont}
+\usepackage{url}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{booktabs}
+\usepackage{bm}
+
+\graphicspath{{figures/}}
+\hyphenation{op-tical net-works semi-conduc-tor}
+
+\begin{document}
+	
+	% TODO[TITLE]: Freeze the journal title after the two method sections are stable.
+	\title{Graph Neural Network-Based Link Scheduling for Dense Uncrewed Aerial Vehicle Swarms}
+	
+	\author{Qingzhe~Zeng, Lin~Bai, Rui~Han, Jiaxing~Wang, Xin~Xie, and Guowei~Shi%
+		\thanks{Qingzhe Zeng, Lin Bai, Rui Han, and Jiaxing Wang are with the School of Cyber Science and Technology, Beihang University, Beijing, China (e-mail: \{qzzeng, l.bai, ruihan, wang\_jx\}@buaa.edu.cn).}%
+		\thanks{Xin Xie is with the School of Communications and Information Engineering, Chongqing University of Posts and Telecommunications, Chongqing, China (e-mail: xiex@cqupt.edu.cn).}%
+		\thanks{Guowei Shi is with the China Academy of Information and Communications Technology, Beijing, China (e-mail: shigw@sohu.com).}%
+		\thanks{This work was supported in part by XXX. \emph{(Corresponding author: Rui Han.)}}}
+	
+	\markboth{IEEE Transactions on Network Science and Engineering}%
+	{Zeng \MakeLowercase{\textit{et al.}}: Link Scheduling for Dense Aerial Vehicle Swarms}
+	
+	\maketitle
+	
+	\begin{abstract}
+		
+	\end{abstract}
+	
+	\begin{IEEEkeywords}
+		Graph attention networks, link scheduling, low-altitude networks, multiuser diversity, queue-aware scheduling, spatial reuse, UAV swarms.
+	\end{IEEEkeywords}
+	
+	\section{Introduction}
+	\label{sec:introduction}
+	\IEEEPARstart{D}{ense} 
+	
+	\section{Related Work}
+	\label{sec:related_work}
+	
+
+
+	
+	\section{System Model and Problem Formulation}
+	\label{sec:system_model}
+	
+	We consider a dense low-altitude network with a set of UAVs $\mathcal{U} = \{1, \ldots, N\}$. Each UAV is equipped with a single antenna and communicates in half-duplex mode over a shared frequency channel. Time is divided into slots of duration $\tau$.
+	At each slot, each link independently decides whether to activate based on local information. Let $\mathcal{L} = \{1, \ldots, L\}$ denote the set of candidate directed links, where link $i \in \mathcal{L}$ corresponds to a fixed transmitter--receiver pair $(s_i, r_i)$ with $s_i, r_i \in \mathcal{U}$ and $s_i \neq r_i$. Activated links transmit data from their queues at their achievable rates.
+	
+	\subsection{Network Topology and Channel Model}
+	
+	UAV positions follow a horizontal mobility model with specular reflection at the boundary. Position of UAV $u$ in block $b$ is $\mathbf{x}_u[b] \in \mathbb{R}^3$, and the distance between UAVs $u$ and $v$ is $d_{uv}[b] = \|\mathbf{x}_u[b] - \mathbf{x}_v[b]\|_2$.
+	
+	The air-to-air (A2A) channel follows an LoS-dominant Rician block-fading model \cite{liu2019A2AModel}: the channel remains constant within a block and evolves independently across blocks. Let $b(t)$ denote the channel block containing slot $t$. The complex channel from UAV $u$ to UAV $v$ in block $b$ is
+	\begin{equation}
+		h_{uv}[b] = \sqrt{\lambda_0}\, d_{uv}[b]^{-\xi/2}
+		\left( \sqrt{\frac{K}{K+1}} e^{-j2\pi d_{uv}[b]/\lambda_c}
+		+ \sqrt{\frac{1}{K+1}} g_{uv}[b] \right),
+		\label{eq:rician_channel}
+	\end{equation}
+	where $\lambda_0 = (c/(4\pi f_c))^2$ is the free-space propagation constant, $f_c$ is the carrier frequency, $\lambda_c = c/f_c$ is the carrier wavelength, $\xi$ is the path-loss exponent, $K$ is the linear Rician factor, and $g_{uv}[b] \sim \mathcal{CN}(0,1)$ is the scattering component.
+	
+	The instantaneous received power at UAV $v$ from UAV $u$ is $P^{\mathrm{rx}}_{uv}[b] = P_{\mathrm{tx}}|h_{uv}[b]|^2$, and its mean over the scattering component is $\overline{P}^{\mathrm{rx}}_{uv}[b] = P_{\mathrm{tx}}\lambda_0 d_{uv}[b]^{-\xi}$.
+	
+	The scattering component is constant within a block and evolves across blocks as
+	\begin{equation}
+		g_{uv}[b] = \rho\, g_{uv}[b-1] + \sqrt{1-\rho^2}\, \epsilon_{uv}[b],
+		\quad \epsilon_{uv}[b] \sim \mathcal{CN}(0,1),
+		\label{eq:correlated_fading}
+	\end{equation}
+	where $\rho$ controls the inter-block correlation.
+	
+	A link catalog $\mathcal{L}$ is established in the initial channel block based on the mean received power. Link $i$ is detectable in block $b$ when
+	\begin{equation}
+		\nu_i[b] = \mathds{1}\!\left\{ \frac{\overline{P}^{\mathrm{rx}}_{s_i r_i}[b]}{N_0} \geq \beta \right\},
+		\label{eq:availability}
+	\end{equation}
+	where $N_0$ is the receiver noise power spectral density and $\beta$ is the SNR sensitivity threshold \cite{80211be}. An undetectable link remains in the catalog but cannot be scheduled.
+	
+	\subsection{Interference and Scheduling Model}
+	
+	Classical link scheduling models interference as a maximum weighted independent set (MWIS) problem: the candidate links form a binary undirected conflict graph, where adjacent links impose hard exclusion. In a dense network, this binary symmetric abstraction can yield an overly sparse schedule by suppressing links whose mutual interference is actually tolerable. To address this, we adopt a weighted directed interference graph to retain interference direction and strength, and evaluate rates under continuous physical interference.
+	
+	The candidate links form a weighted directed interference graph $\mathcal{G}[b] = (\mathcal{L}, \mathcal{E}[b], \mathcal{W}[b])$, as illustrated in Fig.\@\ref{fig:conflict_graph}. A directed edge $j \rightarrow i$, where $i, j \in \mathcal{L}$, indicates that the transmitter of link $j$ can significantly affect the receiver of link $i$. Following the physical-interference model in \cite{ImpactInterference}, the edge exists if the two links share a UAV or if
+	\begin{equation}
+		P^{\mathrm{rx}}_{s_j r_i}[b] \geq \frac{P^{\mathrm{rx}}_{s_i r_i}[b]}{\beta} - N_0.
+		\label{eq:interference_edge}
+	\end{equation}
+	For a physical-interference edge, the weight $w_{ji}^{\mathrm{raw}}[b]$ quantifies the interference strength and is defined as
+	\begin{equation}
+		w_{ji}^{\mathrm{raw}}[b] = \frac{P^{\mathrm{rx}}_{s_j r_i}[b]}
+		{P^{\mathrm{rx}}_{s_i r_i}[b]/\beta - N_0}.
+		\label{eq:interference_weight}
+	\end{equation}
+	Links sharing a UAV are assigned a prescribed maximum weight, constituting hard conflicts under the half-duplex constraint. All other edges represent soft physical interference.
+	
+	\begin{figure}[!t]
+		\centering
+		\includegraphics[width=\linewidth]{conflict_graph.pdf}
+		\caption{Mapping from communication graph to directed conflict graph.}
+		\label{fig:conflict_graph}
+	\end{figure}
+	
+	At slot $t$, each link produces a binary activation variable $a_i(t) \in \{0, 1\}$, where $a_i(t) = 1$ indicates activation. Let $\mathbf{a}(t) = [a_1(t), \ldots, a_L(t)]^{\mathsf{T}}$. The feasible activation set is
+	\begin{equation}
+		\mathcal{A}[b] = \left\{ \mathbf{a} \in \{0,1\}^L :
+		\begin{array}{l}
+			a_i \leq \nu_i[b], \ \forall i \in \mathcal{L}, \\
+			\displaystyle\sum_{i: u \in \{s_i, r_i\}} a_i \leq 1, \ \forall u \in \mathcal{U}
+		\end{array} \right\}.
+		\label{eq:feasible_set}
+	\end{equation}
+	The first constraint ensures that a link is detectable in the current block, and the second constraint enforces the half-duplex rule.
+	
+	For $\mathbf{a}(t) \in \mathcal{A}[b(t)]$, the signal-to-interference-plus-noise ratio (SINR) of active link $i$ is
+	\begin{equation}
+		\gamma_i(\mathbf{a}(t); \mathbf{P}[b(t)]) = \frac{P^{\mathrm{rx}}_{s_i r_i}[b(t)]}
+		{N_0 + \displaystyle\sum_{j \neq i} a_j(t) P^{\mathrm{rx}}_{s_j r_i}[b(t)]}.
+		\label{eq:sinr}
+	\end{equation}
+	Here $\mathbf{P}[b(t)] \triangleq (P^{\mathrm{rx}}_{uv}[b(t)])_{u,v\in\mathcal{U}}$ collects all instantaneous received powers in block $b(t)$ and serves as the channel-state input to $\gamma_i$. The link rate $R_i(t) = R_i(\mathbf{a}(t); \mathbf{P}[b(t)])$ follows from $\gamma_i$ via Shannon's formula.
+	
+	\subsection{Traffic and Queueing Model}
+	
+	The instantaneous link rate $R_i(\mathbf{a}(t); \mathbf{P}[b(t)])$ is determined jointly by the scheduling decision $\mathbf{a}(t)$ and the power-vector state $\mathbf{P}[b(t)]$. In practice, activated links transmit packets that have accumulated in the upper-layer queues. Section~\ref{sec:marginal_mp} introduces stochastic traffic arrivals and per-link queue backlogs, so scheduling must balance transmission capability with backlog demand.
+	
+	Each link $i \in \mathcal{L}$ maintains a queue with backlog $Q_i(t)$ at the beginning of slot $t$. Packet arrivals follow an independent Poisson process:
+	\begin{equation}
+		A_i(t) \sim \operatorname{Poisson}(\lambda_i),
+		\label{eq:arrival_rate}
+	\end{equation}
+	where $\lambda_i$ may differ across links, yielding heterogeneous traffic load.
+	
+	Let $L_p$ be the fixed packet size in bits. The service capacity of link $i$ in slot $t$ (in packets) is $S_i(t) = B \tau R_i(\mathbf{a}(t); \mathbf{P}[b(t)]) / L_p$. The actual service is $D_i(t) = \min\{ Q_i(t), S_i(t) \}$. Service is completed before new arrivals in the same slot, and the queue evolves as
+	\begin{equation}
+		Q_i(t+1) = \max\{ Q_i(t) - D_i(t), 0 \} + A_i(t).
+		\label{eq:queue_update}
+	\end{equation}
+	
+	\subsection{Problem Formulation}
+	
+	To enhance the overall spectral efficiency of the dense UAV network, we first formulate the instantaneous network sum-rate maximization problem as follows:
+	\begin{equation}
+		\mathcal{P}_1:
+		\begin{aligned}[t]
+			& \max_{\mathbf{a} \in \{0,1\}^L} \ \sum_{i \in \mathcal{L}} R_i(\mathbf{a}; \mathbf{P}[b]), \\
+			\text{s.t.} \ & a_i \in \{0, 1\}, \quad \forall i \in \mathcal{L}, \\
+			& a_i \leq \nu_i[b], \quad \forall i \in \mathcal{L}, \\
+			& \sum_{i: u \in \{s_i, r_i\}} a_i \leq 1, \quad \forall u \in \mathcal{U}.
+		\end{aligned}
+		\label{prob:sum_rate}
+	\end{equation}
+	The optimum of $\mathcal{P}_1$ explores the performance boundary of spatial reuse from a physical-layer throughput perspective. However, accounting for this optimal active set is computationally demanding. While traditional link scheduling is often abstracted as a Maximum Weighted Independent Set (MWIS) problem, our formulation preserves the precisely quantified interference rather than simplifying it into binary exclusions. This non-convex combinatorial coupling makes it difficult to solve directly using conventional optimization techniques.
+	
+	While $\mathcal{P}_1$ effectively establishes the limit of spatial multiplexing under a full-buffer assumption, it ignores the actual transmission demands of the upper layers. In practical UAV swarms, traffic demands can be highly heterogeneous across different service areas. If the scheduler is driven solely by PHY achievable rates, links with long-term favorable channel conditions will be scheduled repeatedly. This greedy behavior can severely starve other links that experience heavier traffic pressure but slightly worse channels. 
+	
+	Therefore, the optimization objective can be extended to incorporate Quality of Service (QoS) by considering queue dynamics. Motivated by classical Maximum Weight Scheduling (MWS) and Lyapunov optimization theories \cite{TassiulasEphremides1992}, adopting a queue-weighted optimization objective can effectively achieve long-term network stability. Accordingly, the scheduling problem is posed as maximizing the long-term expected delivered service over $T$ slots while keeping all per-link queues stable\cite{mab}:
+	\begin{equation}
+		\mathcal{P}_2:
+		\begin{aligned}[t]
+			& \max_{\{\mathbf{a}(t)\}} \ \frac{1}{T} \sum_{t=1}^{T} \sum_{i \in \mathcal{L}} \mathbb{E}[D_i(t)], \\
+			\text{s.t.} \ & a_i(t) \in \{0, 1\}, \quad \forall i \in \mathcal{L}, \\
+			& a_i(t) \leq \nu_i[b(t)], \quad \forall i \in \mathcal{L}, \\
+			& \sum_{i: u \in \{s_i, r_i\}} a_i(t) \leq 1, \quad \forall u \in \mathcal{U}, \\
+			& \limsup_{T \to \infty} \frac{1}{T} \sum_{t=1}^{T} \sum_{i \in \mathcal{L}} \mathbb{E}[Q_i(t)] < \infty.
+		\end{aligned}
+		\label{prob:queue_weighted}
+	\end{equation}
+	
+	By establishing the connection between physical capacity bounds and MAC-layer throughput demands, this two-stage formulation effectively bridges the PHY and MAC layers. We will systematically discuss how to address these two coupled problems via a low-overhead, distributed learning and coordination framework in the subsequent sections.
+	
+	\section{GAT-Based Link Scheduling for Sum-Rate Maximization}
+	\label{sec:gat_scheduler}
+	
+	In this section, we formulate the solution for $\mathcal{P}_1$. The inherent graph structure of the wireless interference model naturally inspires the exploration to adopt graph neural networks (GNNs). Given the large-scale, weighted, and directed characteristics of dense conflict graphs, spatial-based GATs are significantly more suitable than traditional spectral-based GCNs, which require prohibitive eigendecomposition. By leveraging the message-passing mechanism, GAT enables the scheduling model to acquire a broad network vision through strictly local information exchanges. This empowers the network to achieve high spatial reuse with remarkably low interaction overhead.
+	
+	To implement this efficiently, we adopt a centralized training and distributed execution (CTDE) protocol \cite{spatialDL, gatUAVconf}. The GAT model is trained offline using global network snapshots to capture generalizable interference patterns. Once trained, the model parameters are distributed to the UAVs for online execution. Fig.\@\ref{fig:gat_framework} illustrates the overall pipeline of our proposed GAT-assisted scheduling scheme.
+	
+	\begin{figure*}[!t]
+		\centering
+		\includegraphics[width=\linewidth]{gat_framework.pdf}
+		\caption{Illustration of the GAT-based distributed link scheduling framework.}
+		\label{fig:gat_framework}
+	\end{figure*}
+	
+	\subsection{Graph Representation and Feature Initialization}
+	\label{ssec:gat_representation}
+	
+	Each candidate link $i \in \mathcal{L}$ corresponds to a vertex in the conflict graph $\mathcal{G}[b] = (\mathcal{L}, \mathcal{E}[b], \mathcal{W}[b])$. The raw feature of vertex $i$, denoted as $\mathbf{x}_i[b]$, is the intuitively observable block-constant direct SNR, which is standardized to remove scale variations across networks of different densities. Similarly, for each directed edge $j \rightarrow i$, the edge feature $\phi_{ji}[b]$ represents the physical interference, which is also standardized to quantify the extent to which link $j$ degrades the reception of link $i$.
+	
+	Following graph embedding architectures \cite{graphEmbedding}, an initial multi-layer perceptron (MLP) projects the raw features into a low-dimensional initial vertex embedding:
+	\begin{equation}
+		\mathbf{h}_i^{(0)}[b] = \sigma_0\!\bigl( \mathbf{W}_0 \mathbf{x}_i[b] + \mathbf{b}_0 \bigr),
+		\label{eq:gat_initial_embedding}
+	\end{equation}
+	where $\mathbf{h}_i^{(0)}[b]$ serves as the input to the subsequent GAT message passing, $\sigma_0(\cdot)$ is the activation function, and $\{\mathbf{W}_0, \mathbf{b}_0\}$ are learnable parameters.
+	
+	\subsection{Edge-Enhanced Graph Attention}
+	\label{ssec:gat_attention}
+	
+	Scheduling decisions at every UAV link are produced by an iterative GAT that aggregates information locally over a fixed number of message-passing rounds. Each round expands the effective receptive field beyond the one-hop neighborhood, allowing the vertex to infer complex interference patterns that cannot be observed from its own SNR alone. We denote by $\mathbf{h}_i^{(l)}$ the representation of vertex $i$ at layer $l$, and let $\mathcal{N}_i$ denote its set of incoming neighbors on the conflict graph.
+	
+	To properly reflect the asymmetric nature of wireless interference, we modify the standard attention mechanism by explicitly injecting the directed edge feature $\phi_{ji}[b]$. The vertex and edge features are first projected into a shared attention space:
+	\[
+	\mathbf{q}_i^{(l)} = \mathbf{W}\mathbf{h}_i^{(l)}, \quad
+	\mathbf{k}_j^{(l)} = \mathbf{W}\mathbf{h}_j^{(l)}, \quad
+	\mathbf{e}_{ji}^{(l)} = \mathbf{W}_{\mathrm{e}}\, \phi_{ji}[b].
+	\]
+	The unnormalized correlation score is evaluated by concatenating these projections:
+	\begin{equation}
+		e^{(l)}_{j\to i} = \mathrm{LeakyReLU}\!\Bigl( \mathbf{a}^{\mathsf{T}} \bigl[ \mathbf{q}_i^{(l)} \;\Vert\; \mathbf{k}_j^{(l)} \;\Vert\; \mathbf{e}_{ji}^{(l)} \bigr] \Bigr),
+		\label{eq:gat_attention_score}
+	\end{equation}
+	and the normalized attention coefficient is obtained via a softmax function:
+	\begin{equation}
+		\alpha^{(l)}_{j\to i} = \frac{\exp\bigl(e^{(l)}_{j\to i}\bigr)}{\sum_{k \in \mathcal{N}_i} \exp\bigl(e^{(l)}_{k \to i}\bigr)}.
+		\label{eq:gat_attention}
+	\end{equation}
+	By explicitly incorporating directed edge features, the model ensures that heterogeneous and directional interference relationships are accurately reflected in the neural embeddings.
+	
+	To capture diverse interference dynamics such as varying geographic distances and rapid small-scale fading, we adopt multi-head attention. By executing $K$ independent attention heads in parallel, the model projects vertex features into multiple distinct representation subspaces. Their outputs are concatenated to form the final update for each iteration:
+	\begin{equation}
+		\mathbf{h}_i^{(l+1)}[b] = \;\Big\Vert_{k=1}^{K}\; \sigma\!\Bigl( \sum_{j \in \mathcal{N}_i} \alpha^{(k,l)}_{j\to i} \bigl( \mathbf{W}^{(k)} \mathbf{h}_j^{(l)}[b] + \mathbf{W}_{\mathrm{e}}^{(k)}\, \phi_{ji}[b] \bigr) \Bigr).
+		\label{eq:gat_multihead}
+	\end{equation}
+	
+	Dense conflict graphs tend to be fully connected, so only a few message-passing iterations are adequate~\cite{gatUAVconf}. In practice, $L = 2$ layers suffice to capture dominant local interference without incurring over-smoothing, so that each vertex has an effective receptive field that approximates the global interference structure.
+	
+	\subsection{Unsupervised Optimization and Final Decision}
+	\label{ssec:gat_output}
+	
+	After $L$ rounds of message passing, the final embedding $\mathbf{h}_i^{(L)}[b]$ is mapped to a continuous activation tendency through an output MLP $\Gamma(\cdot)$ followed by a sigmoid:
+	\begin{equation}
+		\tilde{\pi}_i[b] = \sigma\!\bigl( \Gamma(\mathbf{h}_i^{(L)}[b]) \bigr) \in (0, 1).
+		\label{eq:gat_soft_output}
+	\end{equation}
+	At deployment, the continuous output is binarized to obtain the final scheduling decision for the vertex:
+	\begin{equation}
+		a_i[b] = \mathds{1}\!\bigl\{ \tilde{\pi}_i[b] \geq 0.5 \bigr\}.
+		\label{eq:gat_binarize}
+	\end{equation}
+	The threshold 0.5 is used throughout this paper.
+	
+	To preserve differentiability through the rate expression during gradient-based training, the discrete activation variables $a_j$ in the interference term are relaxed to their soft continuous counterparts $\tilde{\pi}_j$. This yields a continuous surrogate rate:
+	\begin{equation}
+		\tilde{R}_i[b] = B \log_2\!\Biggl( 1 +
+		\frac{\tilde{\pi}_i[b]\, P^{\mathrm{rx}}_{s_i r_i}[b]}
+		{\Gamma \bigl( N_0
+			+ \displaystyle\sum_{j \in \mathcal{N}_i}
+			\tilde{\pi}_j[b]\, P^{\mathrm{rx}}_{s_j r_i}[b]
+			\bigr)} \Biggr).
+		\label{eq:gat_surrogate_rate}
+	\end{equation}
+	
+	The GAT is trained end-to-end against the negative sum-rate of every training snapshot. The unsupervised loss function minimizes the negative expected sum-rate:
+	\begin{equation}
+		\min_{\boldsymbol{\theta}}\; \mathcal{L}(\boldsymbol{\theta}) = - \sum_{i \in \mathcal{L}} \tilde{\pi}_i[b]\, \tilde{R}_i[b].
+		\label{eq:gat_loss}
+	\end{equation}
+	
+	As discussed in our preliminary work \cite{gatUAVconf}, stable convergence can be guaranteed under a properly tuned learning rate, eliminating the need for heuristic sparsity or conflict penalties.
+	
+	\subsection{Distributed Deployment and Complexity}
+	\label{ssec:gat_execution}
+	
+	After offline training is completed, the learned parameters are distributed to every UAV. Online inference is fully distributed and operates without any central coordinator. Since the channel features are block-constant under the block-fading model, scheduling decisions are produced locally and only once at the beginning of each channel block. This one-shot execution eliminates the global CSI exchange or central scheduler at runtime, making it highly compatible with the strict latency constraints of fast-varying FANETs. The complete distributed online scheduling procedure is summarized in Algorithm~\ref{alg:gat_scheduler}.
+	
+\begin{algorithm}[tb]
+	\caption{Distributed GAT-assisted Link Scheduling}
+	\label{alg:gat_scheduler}
+	\begin{algorithmic}[1]
+		\REQUIRE Conflict graph $\mathcal{G}[b]$, local node features $\{\mathbf{x}_i[b]\}_{i\in\mathcal{L}}$, layer count $L$, attention heads $K$.
+		\ENSURE Discrete link activation decisions $a_i[b] \in \{0, 1\}$.
+		\STATE \textbf{Initialization Phase:} 
+		\STATE Extract initial embeddings: $\mathbf{h}_i^{(0)}[b] = \sigma_0(\mathbf{W}_0\mathbf{x}_i[b]+\mathbf{b}_0)$.
+		\STATE \textbf{Message Passing Phase:} 
+		\FOR{layer $l = 0$ to $L-1$}
+		\FOR{each vertex $i \in \mathcal{L}$ \textbf{in parallel}}
+		\FOR{each head $k = 1$ to $K$}
+		\STATE Compute attention score $e_{j \to i}^{(k, l)}$ and normalized weight $\alpha_{j \to i}^{(k, l)}$ for neighbors $j \in \mathcal{N}_i$ via Eq. \eqref{eq:gat_attention}.
+		\STATE Aggregate: \\$\mathbf{z}_i^{(k)} = \sum_{j\in\mathcal{N}_i} \alpha_{j \to i}^{(k, l)} \left(\mathbf{W}^{(k)}\mathbf{h}_j^{(l)}[b] + \mathbf{W}_{\mathrm{e}}^{(k)}\phi_{ji}[b]\right)$.
+		\ENDFOR
+		\STATE Update state: $\mathbf{h}_i^{(l+1)}[b] = \mathop{\Big\Vert}_{k=1}^K \sigma(\mathbf{z}_i^{(k)})$.
+		\ENDFOR
+		\ENDFOR
+		\STATE \textbf{Decision Output Phase:} 
+		\FOR{each vertex $i \in \mathcal{L}$ \textbf{in parallel}}
+		\STATE Compute soft probability: $\tilde{\pi}_i[b] = \mathrm{sigmoid}\left(\Gamma(\mathbf{h}_i^{(L)}[b])\right)$.
+		\STATE Binarize decision: $a_i[b]=\mathds{1}\{\tilde{\pi}_i[b]\ge 0.5\}$.
+		\ENDFOR
+	\end{algorithmic}
+\end{algorithm}
+	
+	To analyze the computational complexity, the scheduling inference involves three stages: initial feature embedding, $L$ rounds of GAT message passing, and the final decision output. The dominant computational overhead lies in the message passing. Summing the per-layer vertex projection $L d^{2}$, per-edge attention-score projection $K |\mathcal{E}| d$, and per-edge aggregation $K |\mathcal{E}| d$ across the $L$ GAT layers yields the total real multiplications per block as:
+	\begin{equation}
+		C_{\rm GAT} = L\bigl(2 L d^{2} + 2 K |\mathcal{E}| d\bigr),
+	\end{equation}
+	where $L$ is the number of candidate links, $|\mathcal{E}|$ the number of directed interference edges, $L$ also the number of GAT layers, $K$ the number of attention heads, and $d$ the embedding dimension per head. 
+	
+	\begin{table}[!t]
+		\centering
+		\caption{Computational Complexity Comparison (Number of Real Multiplications per Scheduling Decision).}
+		\label{tab:complexity}
+		\begin{tabular}{lc}
+			\toprule
+			Method & Complexity \\
+			\midrule
+			Spatial DL~\cite{spatialDL}        & $2 L^{2} K_{\rm conv} s^{2}$ \\
+			FPLinQ~\cite{fplinq}               & $\tfrac{1}{2} I L^{2}(L+1)$ \\
+			Local Greedy~\cite{LGS}            & $L |\mathcal{N}_i|$ \\
+			GAT scheduler (this paper)         & $L\bigl(2 L d^{2} + 2 K |\mathcal{E}| d\bigr)$ \\
+			\bottomrule
+		\end{tabular}
+	\end{table}
+	
+	Table~\ref{tab:complexity} compares the computational complexity of our proposed GAT scheduler against several baselines. Here, $I$ denotes the number of outer WMMSE iterations in FPLinQ; $K_{\rm conv}$ and $s$ represent the number and spatial size of CNN kernels in Spatial DL, respectively. In extremely dense networks where the number of candidate links $L$ is large, our per-link execution cost is bounded by $2 K |\mathcal{N}_i| d$ real multiplications per round, which effectively avoids the global $\mathcal{O}(L^2)$ overhead, achieving highly scalable execution while still capturing asymmetric physical interference through the learned attention weights.
+	
+	
+	
+\section{Queue-Aware Link Scheduling via GAT-Assisted Message Passing}
+\label{sec:marginal_mp}
+
+The GAT scheduler developed in Section~\ref{sec:gat_scheduler} provides a distributed architecture to explore the spatial reuse upper bounds of the network, offering a feasible structural solution for the instantaneous sum-rate maximization problem $\mathcal{P}_1$. However, in practical FANETs, traffic arrivals are highly bursty and spatially heterogeneous. If the MAC layer schedules transmissions based solely on sum-rate maximization, the network is prone to resource misallocation where links with persistently favorable channel conditions may be over-served, while heavily backlogged links with marginally worse channels suffer from local starvation. To explore the potential of QoS-aware cross-layer optimization, we build upon the GAT architecture and incorporate the queueing model from Section~\ref{sec:system_model}-C, shifting our focus to the queue-aware link scheduling problem $\mathcal{P}_2$.
+
+\subsection{The GAT-MP Architecture Design}
+\label{ssec:gat_mp_architecture}
+
+Learning-based wireless communications can generally be categorized into data-driven and model-based approaches\cite{ModelBasedDL}. Data-driven models typically treat the communication task as a black box, leveraging end-to-end training to map inputs directly to outputs. While offering high flexibility, exploring complex non-linear relationships without structural guidance often requires massive amounts of training data and incurs high training costs. Conversely, model-based deep learning integrates domain knowledge into the network design, replacing only specific analytical modules with learning components to significantly reduce data requirements and training overhead \cite{PMAPNet}.
+
+To address the queue-aware scheduling problem $\mathcal{P}_2$, an intuitive data-driven extension would concatenate queue backlogs and channel features to train an end-to-end mapping. However, in dense UAV swarms, all links are tightly coupled through mutual interference, and both queue states and channel conditions jointly dictate the final utility. Under independent neural network outputs, the model observes the same channel and queue inputs but receives conflicting gradients merely due to the random exploratory activations of other links during training. Because the loss function only provides a global scalar reward without explicit link-level supervision on competitive ranking, the neural network lacks a built-in arbitration mechanism and often collapses into shortcut policies.
+
+Therefore, we adopt a model-based logic and propose the GAT-based Marginal Message Passing (GAT-MP) architecture, as illustrated in Fig.~\ref{fig:gat_mp}. Instead of relying on unguided end-to-end training, the framework utilizes the GAT to generate a structural prior and employs an explicit message-passing protocol for final conflict resolution. The process consists of two main components. First, the GAT combines physical interference representations with local queue states to form an initial scheduling skeleton. Second, an iterative marginal utility negotiation is conducted. After satisfying the most urgent QoS demands via the initial skeleton, this negotiation explores potential spatial reuse gains through a few rounds of distributed message passing, eventually reaching a QoS-aware scheduling consensus.
+
+\begin{figure}[!t]
+	\centering
+	\includegraphics[width=\linewidth]{GAT-MP.png}
+	\caption{The proposed GAT-MP architecture integrating PHY-oriented GAT priors with MAC-layer marginal utility message passing.}
+	\label{fig:gat_mp}
+\end{figure}
+
+\subsection{GAT-Assisted Initial Skeleton Construction}
+\label{ssec:initial_skeleton}
+
+In a distributed network, an individual link can typically only observe its own SNR and queue length. Relying solely on these local metrics to make independent access decisions often leads to severe collisions in dense deployments, as the nodes remain blind to the broader interference environment. 
+
+To provide a better negotiation basis, we leverage the soft scheduling probability $\tilde{\pi}_j[b]$ generated by the GAT. Since $\tilde{\pi}_j[b]$ encodes the optimal PHY-level activation tendency derived from the sum-rate objective, it provides a potential initial transmission probability that implicitly considers network-wide contention. We construct a GAT-induced expected-interference score for link $i$:
+\begin{equation}
+	\widehat{I}_i^{\mathrm{GAT}}[b] = \sum_{j\in\mathcal{N}_i} \tilde{\pi}_j[b] P^{\mathrm{rx}}_{s_j r_i}[b].
+\end{equation}
+This score yields a collision-aware expected rate for link $i$ under the probable contention of its neighbors:
+\begin{equation}
+	C_i^{\mathrm{GAT}}[b] = \log_2\!\left(1+ \frac{P^{\mathrm{rx}}_{s_i r_i}[b]}{\Gamma\bigl(N_0 + \widehat{I}_i^{\mathrm{GAT}}[b]\bigr)} \right).
+\end{equation}
+
+At the beginning of slot $t$, each link calculates its local competitive weight by multiplying this GAT-assisted capacity prior with its current MAC-layer urgency:
+\begin{equation}
+	w_i^{\mathrm{GAT}}(t) = Q_i(t) C_i^{\mathrm{GAT}}[b].
+\end{equation}
+Through a single round of local exchange, each link compares its weight with its incoming and outgoing conflict neighbors. A link joins the initial active set $\mathcal{A}^{(0)}(t)$ if it represents a strict local maximum within its neighborhood, using link IDs to break ties. This LocalMax operation guarantees a sparse starting skeleton that naturally prioritizes heavily backlogged links while inheriting the collision-avoidance capabilities learned by the GAT.
+
+\subsection{Marginal-Utility Message Passing}
+\label{ssec:marginal_utility}
+
+While the initial skeleton $\mathcal{A}^{(0)}(t)$ provides an efficient starting point, it leaves room for potential spatial reuse improvements. To closely approximate the MWS objective in $\mathcal{P}_2$, we formulate the exact marginal utility evaluation as a distributed message-passing process over the conflict graph, inspired by the message-passing neural network (MPNN) paradigm\cite{MPNN}.
+
+Let the global queue-weighted utility for a given active set $\mathcal{A}$ at slot $t$ be defined as $U(\mathcal{A}; t) = \sum_{i \in \mathcal{L}} Q_i(t) R_i(\mathcal{A}; \mathbf{P}[b])$. Over a negotiation budget of $J$ rounds, links exchange physical-state messages to iteratively evaluate the exact marginal impact of flipping their state. Let $j \in \{0, \dots, J-1\}$ denote the negotiation round index.
+
+In this message-passing paradigm, each link acts as a node that updates its state based on messages aggregated from its conflict neighbors. For a currently inactive link $i \notin \mathcal{A}^{(j)}$, the marginal joining utility is mathematically defined as:
+\begin{equation}
+	\Delta_i^+ = U(\mathcal{A}^{(j)} \cup \{i\}; t) - U(\mathcal{A}^{(j)}; t).
+\end{equation}
+Practically, evaluating this term requires link $i$ to aggregate \textit{penalty messages} from its active neighbors. Each active receiver $k \in \mathcal{A}^{(j)}$ in the conflict neighborhood computes its utility degradation caused by the hypothetical interference from link $i$, and sends this penalty as a message back to $i$. Link $i$ then subtracts the sum of these received messages (the interference externality) from its own queue-weighted service gain to obtain $\Delta_i^+$.
+
+Conversely, for a currently active link $i \in \mathcal{A}^{(j)}$, the marginal leaving utility is:
+\begin{equation}
+	\Delta_i^- = U(\mathcal{A}^{(j)} \setminus \{i\}; t) - U(\mathcal{A}^{(j)}; t).
+\end{equation}
+This value captures the network-wide benefit of yielding the channel. By aggregating recovery messages from neighboring active links, which indicate how much their rates would improve if link $i$ were silenced, link $i$ can determine if the interference it causes outweighs its own weighted service contribution. 
+
+In round $j$, after aggregating these messages, any link with a positive marginal utility ($\Delta_i > 0$, where $\Delta_i \in \{\Delta_i^+, \Delta_i^-\}$) is motivated to flip its state. To ensure monotonic and safe coordination, local arbitration is enforced. Among all links proposing a state flip within a local conflict neighborhood, only the proposal with the maximum positive marginal utility is retained. Let $\mathcal{W}^{(j)}$ denote the set of winning links across the network that survive this local arbitration. The network states are then updated in parallel:
+\begin{equation}
+	\mathcal{A}^{(j+1)}(t) = \mathcal{A}^{(j)}(t) \triangle \mathcal{W}^{(j)},
+\end{equation}
+where $\triangle$ denotes the symmetric difference operator. By evaluating these physical marginals through message passing, the protocol resolves the spatial reuse versus multiuser diversity trade-off based on actual traffic demands.
+
+\subsection{Distributed Execution and Complexity}
+\label{ssec:overhead}
+
+The complete GAT-Assisted MarginalMP protocol requires three types of logical messages per slot. First, the GAT block-boundary inference involves one round of per-vertex embedding exchange (Section~\ref{sec:gat_scheduler}), producing the soft scheduling probabilities $\{\tilde{\pi}_i[b]\}$ and the capacity priors $\{C_i^{\mathrm{GAT}}[b]\}$ that are cached for all slots in the block. Second, the LocalMax step requires each link to broadcast its scalar weight $w_i^{\mathrm{GAT}}(t)$ to its one-hop conflict neighbors, costing $|\mathcal{N}_i|$ scalar exchanges. Third, each MarginalMP round requires every active receiver to report the rate change caused by each neighbor's flip proposal to the proposing link, plus the arbitration decision broadcast. Denoting the maximum in-degree of the conflict graph by $|\mathcal{N}_{\max}|$, the per-slot message count is $O(J\cdot|\mathcal{N}_{\max}|)$ scalars, which is bounded by the local neighborhood size and does not grow with the total number of links $L$.
+
+Computationally, the dominant cost per slot lies in evaluating the marginal utilities $\Delta_i^+$ and $\Delta_i^-$, which involve recomputing $R_i(\mathcal{A}\cup\{i\})$ and $R_i(\mathcal{A}\setminus\{i\})$ for each link. A naive vectorized implementation requires $O(L\cdot|\mathcal{A}|)$ rate evaluations per round, but the actual per-link cost is $O(|\mathcal{A}|)$, because only the links affected by $i$'s state change see their SINR altered. In practice, $|\mathcal{A}|$ is a small fraction of $L$ due to the half-duplex constraint, so the marginal computation scales well to dense networks.
+
+The MarginalMP protocol reuses the GAT interference representation without retraining, bridges the gap between the GAT-derived physical capacity envelope and the MWS queue-stability objective, and confines all per-slot signaling to bounded one-hop neighborhoods. These properties make it uniquely suited for distributed execution in dense UAV ad hoc networks. The overall procedure is summarized in Algorithm~\ref{alg:marginal_mp}.
+
+\begin{algorithm}[tb]
+	\caption{GAT-Assisted Marginal Message Passing}
+	\label{alg:marginal_mp}
+	\begin{algorithmic}[1]
+		\REQUIRE Conflict graph $\mathcal{G}[b]$, channel powers $\mathbf{P}[b]$, queues $\{Q_i(t)\}$, GAT outputs $\{\tilde{\pi}_i[b]\}$, negotiation rounds $J$.
+		\ENSURE Final active set $\mathcal{A}^{(J)}(t)$.
+		\STATE \textbf{Block-Level Initialization:}
+		\FOR{each link $i \in \mathcal{L}$ in parallel}
+		\STATE Calculate and cache $C_i^{\mathrm{GAT}}[b]$ using $\{\tilde{\pi}_j[b]\}_{j \in \mathcal{N}_i}$.
+		\ENDFOR
+		\STATE \textbf{Slot-Level Execution (at slot $t$):}
+		\FOR{each link $i \in \mathcal{L}$ in parallel}
+		\STATE Compute local weight $w_i^{\mathrm{GAT}}(t) = Q_i(t) C_i^{\mathrm{GAT}}[b]$.
+		\STATE Broadcast $w_i^{\mathrm{GAT}}(t)$ to local conflict neighbors.
+		\STATE Join $\mathcal{A}^{(0)}(t)$ if $w_i^{\mathrm{GAT}}(t)$ is a strict local maximum.
+		\ENDFOR
+		\STATE \textbf{Marginal Utility Negotiation:}
+		\FOR{round $j = 0$ to $J-1$}
+		\FOR{each link $i \in \mathcal{L}$ in parallel}
+		\IF{$i \notin \mathcal{A}^{(j)}(t)$}
+		\STATE Evaluate joining marginal $\Delta_i^+$ by aggregating penalty messages from active neighbors.
+		\ELSE
+		\STATE Evaluate leaving marginal $\Delta_i^-$ by aggregating recovery messages from active neighbors.
+		\ENDIF
+		\STATE If $\Delta_i > 0$, broadcast state-flip proposal.
+		\ENDFOR
+		\STATE Perform local arbitration to select the proposal with the maximum positive marginal, forming the set of winners $\mathcal{W}^{(j)}$.
+		\STATE Update active set: $\mathcal{A}^{(j+1)}(t) = \mathcal{A}^{(j)}(t) \triangle \mathcal{W}^{(j)}$.
+		\ENDFOR
+		\RETURN $\mathcal{A}^{(J)}(t)$
+	\end{algorithmic}
+\end{algorithm}
+	
+	\section{Simulation Results}
+	\label{sec:simulation}
+	% TODO[SIM-A]: Simulation Settings
+	% TODO[SIM-B]: Sum-Rate Scheduling Performance
+	% TODO[SIM-C]: Queue-Aware Scheduling Performance
+	% TODO[SIM-D]: Mobility and Imperfect CSI
+	
+	\section{Conclusion}
+	\label{sec:conclusion}
+	% TODO[CONCLUSION]: Complete after the formal results are frozen.
+	
+	\bibliographystyle{IEEEtran}
+	\bibliography{ref}
+	
+\end{document}

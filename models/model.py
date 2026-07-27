@@ -175,6 +175,7 @@ class GATScheduler(nn.Module):
             "input_feature_std", torch.clamp(feature_std, min=1e-6), persistent=False
         )
         self.latest_scores = None
+        self.latest_soft_probabilities = None
 
         # Initial MLP for node embedding
         self.node_embed = NodeEmbedding(
@@ -281,6 +282,7 @@ class GATScheduler(nn.Module):
         # 线性缩放到 (ε, 1-ε) 区间，既避免完全饱和，又保留梯度
         eps = 1e-3
         pi_soft = pi_soft * (1 - 2 * eps) + eps
+        self.latest_soft_probabilities = pi_soft
         
         if use_ste and self.training:
             # Straight-Through Estimator (STE):

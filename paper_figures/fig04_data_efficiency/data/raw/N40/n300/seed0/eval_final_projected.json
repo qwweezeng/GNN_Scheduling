@@ -1,0 +1,10 @@
+{
+  "num_uav": 40,
+  "checkpoint": "checkpoints/paper/proposed_gat/rician_K5_tx10/N40/seed0/full_300/final_model.pth",
+  "canonical_test_fingerprint": "67af9e708b3e4171ebde2c474ed86082b4c87d541287d788110b7b4ea3b8b11b",
+  "num_test_samples": 128,
+  "decision_rule": "hard_threshold_pi_ge_0.5_endpoint_mutual_matching",
+  "schedulable": true,
+  "test_projected_binary_rate_mbps": 174.70250762999058,
+  "test_projected_binary_rate_sem_mbps": 2.783566158605949
+}

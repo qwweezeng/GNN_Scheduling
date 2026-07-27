@@ -1,0 +1,16 @@
+{
+  "num_uav": 50,
+  "checkpoint": "/workspace/GNN_Scheduling_codex/paper_figures/fig04_data_efficiency/data/raw/N50/n300/seed0/model.pth",
+  "canonical_test_fingerprint": "5ca09a1cb3cc8524502586b0844e85aef24f8cdcc124d494160bd674e0e6040c",
+  "num_test_samples": 128,
+  "decision_rule": "direct_threshold_pi_ge_0.5_without_endpoint_projection",
+  "schedulable": false,
+  "test_unprojected_threshold_utility_mbps": 239.71743911504745,
+  "test_unprojected_threshold_utility_sem_mbps": 3.9325589777972665,
+  "infeasible_state_fraction": 1.0,
+  "mean_active_links": 16.5703125,
+  "mean_active_link_fraction": 0.016251444353128516,
+  "mean_violating_uavs": 9.15625,
+  "mean_endpoint_excess_count": 9.609375,
+  "mean_max_active_links_per_uav": 2.3671875
+}

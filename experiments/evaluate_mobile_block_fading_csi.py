@@ -172,12 +172,20 @@ def main():
         help="gat_assisted,direct_link; optionally add weighted_fplinq",
     )
     parser.add_argument("--fplinq-iterations", type=int, default=100)
-    parser.add_argument("--device", default="cpu", help="cpu, cuda, or mps for Proposed-GAT block inference")
+    parser.add_argument(
+        "--device", default="auto", choices=("auto", "cpu", "cuda"),
+        help="GAT inference device; auto selects CUDA when available.",
+    )
     parser.add_argument(
         "--output", default="results/paper/mobile_csi/marginal_mp_mobile_csi.json"
     )
     args = parser.parse_args()
 
+    device = (
+        "cuda" if args.device == "auto" and torch.cuda.is_available()
+        else args.device if args.device != "auto" else "cpu"
+    )
+    print(f"[evaluate] GAT device={device}", flush=True)
     config = load_config(args.config)
     config.update({
         "NUM_UAV": args.num_uav,
@@ -211,10 +219,10 @@ def main():
         canonical = expected_dataset_metadata(
             config, args.num_uav,
             {"train": 10086, "val": 10087, "test": 10088},
-            {"train": 500, "val": 128, "test": 128},
+            {"train": 300, "val": 128, "test": 128},
         )
         channel_model, channel_checkpoint = load_channel_gat(
-            config, args.num_uav, device=args.device,
+            config, args.num_uav, device=device,
             expected_dataset_fingerprint=canonical["fingerprint"],
         )
         checkpoint_payload = torch.load(

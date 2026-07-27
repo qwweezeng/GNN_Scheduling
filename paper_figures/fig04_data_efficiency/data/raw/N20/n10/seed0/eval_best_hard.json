@@ -1,0 +1,13 @@
+{
+  "num_uav": 20,
+  "checkpoint": "checkpoints/paper/proposed_gat/rician_K5_tx10/N20/seed0/prefix_n10/best_model.pth",
+  "canonical_test_fingerprint": "695c93a4b341e2124d1f45c4cb58f8c3e30cd9d36b664fa8e8ff8c31f21c5c87",
+  "num_test_samples": 128,
+  "decision_rule": "hard_threshold_pi_ge_0.5_no_projection",
+  "schedulable": false,
+  "test_hard_unprojected_utility_mbps": 117.92309828102589,
+  "test_hard_unprojected_utility_sem_mbps": 4.25138833544546,
+  "infeasible_state_fraction": 0.9296875,
+  "mean_active_links": 8.8125,
+  "mean_endpoint_excess_count": 6.5546875
+}

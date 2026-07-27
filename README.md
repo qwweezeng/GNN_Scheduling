@@ -53,7 +53,7 @@ GNN_Scheduling/
 
 - N=20/50 为队列主规模；满缓存/泛化使用 N=20/30/40/50；
 - 10 dBm、2.4 GHz、5 MHz、Rician $K=5$ dB；
-- 500/128/128 train/validation/test，slot=1 ms，packet=12000 bit；
+- 300/128/128 train/validation/test，slot=1 ms，packet=12000 bit；
 - 20% hotspot 链路承载 70% Poisson 到达，无限缓存；另提供 2000 ms deadline 版本并报告丢包；
 - 所有方法共享拓扑、真实信道、arrival trace、link set 和配对 seed；调度器只可看到其指定 CSI，服务永远以当前真实信道结算；
 - 每个最终二元动作都必须通过 `shared_uav_action_audit`。
