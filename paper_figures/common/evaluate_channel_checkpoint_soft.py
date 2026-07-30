@@ -24,6 +24,7 @@ from utils.project_setup import build_gat_scheduler, load_config
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--num-uav", type=int, required=True)
+    parser.add_argument("--train_size", type=int, default=500)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
@@ -46,7 +47,7 @@ def main() -> None:
         "CSI_MODE": "perfect",
     })
     seeds = {"train": 10086, "val": 10087, "test": 10088}
-    sizes = {"train": 300, "val": 128, "test": 128}
+    sizes = {"train": args.train_size, "val": 128, "test": 128}
     metadata = expected_dataset_metadata(config, args.num_uav, seeds, sizes)
     _, dataset_path = paper_dataset_paths(ROOT / "datasets/paper", args.num_uav, seeds, sizes)
     states = load_validated_dataset(dataset_path, metadata, ("test",))["test_set"]

@@ -85,11 +85,11 @@ def summarize(rows):
 def draw(rows, nodes, metric, ylabel, output):
     with paper_style():
         mpl.rcParams.update({
-            'font.size': 9,
-            'axes.labelsize': 9,
-            'xtick.labelsize': 9,
-            'ytick.labelsize': 9,
-            'legend.fontsize': 8,
+            'font.size': 7.5,
+            'axes.labelsize': 7.5,
+            'xtick.labelsize': 7.0,
+            'ytick.labelsize': 7.0,
+            'legend.fontsize': 6.5,
         })
         fig, ax = plt.subplots(figsize=(3.5, 2.35))
         for n in nodes:
@@ -107,7 +107,7 @@ def draw(rows, nodes, metric, ylabel, output):
         ax.set(xlabel='Epoch', ylabel=ylabel)
         ax.spines[['top', 'right']].set_visible(False)
         ax.grid(axis='both', linestyle='--', linewidth=0.5)
-        ax.legend(ncol=2, frameon=True, fontsize=8)
+        ax.legend(ncol=2, fontsize=6.5)
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, format='eps')
         fig.savefig(output.with_suffix('.jpg'), format='jpg', dpi=300, bbox_inches='tight')
@@ -131,7 +131,7 @@ def main():
         writer.writerows(rows)
 
     draw(rows, nodes, 'training_loss', 'Training loss (bit/s/Hz)', HERE / 'figures/fig02_training_loss.eps')
-    draw(rows, nodes, 'validation_binary_rate_mbps', 'Validation hard rate without projection (Mbps)', HERE / 'figures/fig02_validation_binary_rate.eps')
+    draw(rows, nodes, 'validation_binary_rate_mbps', 'Validation hard rate (Mbps)', HERE / 'figures/fig02_validation_binary_rate.eps')
     draw(rows, nodes, 'validation_soft_rate_mbps', 'Soft validation rate (Mbps)', HERE / 'figures/fig02_validation_soft_rate.eps')
     draw(rows, nodes, 'validation_projected_rate_mbps', 'Projected hard validation rate (Mbps)', HERE / 'figures/fig02_validation_projected_rate.eps')
 

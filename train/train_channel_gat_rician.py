@@ -20,8 +20,10 @@ from utils.io import generate_dataset
 from utils.artifacts import (
     atomic_pickle_dump,
     expected_dataset_metadata,
+    expected_dataset_metadata_quantized,
     load_validated_dataset,
     paper_dataset_paths,
+    paper_dataset_paths_quantized,
     write_dataset_manifest,
 )
 from utils.project_setup import (
@@ -94,10 +96,21 @@ def parse_args():
         "--endpoint-penalty-weight", type=float, default=0.0,
         help="Weight for pairwise shared-endpoint activation penalty.",
     )
+    parser.add_argument(
+        "--csi-mode", default="perfect",
+        choices=("perfect", "large_scale", "quantized"),
+        help="CSI quality used for both dataset generation and training.",
+    )
+    parser.add_argument(
+        "--q-bits", type=int, default=None,
+        help=(
+            "Number of quantization bits; required when --csi-mode is 'quantized'."
+        ),
+    )
     return parser.parse_args()
 
 
-def _load_or_generate(config, args):
+def _load_or_generate(config, args, csi_mode, q_bits):
     pool_size = int(args.prefix_pool_size or args.train_size)
     if int(args.train_size) > pool_size:
         raise ValueError("--train_size cannot exceed --prefix_pool_size")
@@ -107,9 +120,11 @@ def _load_or_generate(config, args):
         "val": args.val_size,
         "test": args.test_size,
     }
-    metadata = expected_dataset_metadata(config, args.num_uav, seeds, sizes)
-    train_val_path, test_path = paper_dataset_paths(
-        Path(args.dataset_root), args.num_uav, seeds, sizes
+    metadata = expected_dataset_metadata_quantized(
+        config, args.num_uav, seeds, sizes, csi_mode, q_bits
+    )
+    train_val_path, test_path = paper_dataset_paths_quantized(
+        Path(args.dataset_root), args.num_uav, seeds, sizes, csi_mode, q_bits
     )
     if train_val_path.exists() and test_path.exists() and not args.force_regenerate:
         train_val = load_validated_dataset(
@@ -127,21 +142,21 @@ def _load_or_generate(config, args):
     torch.manual_seed(args.seed)
     train_set = generate_dataset(
         pool_size, generator, include_queue_feature=False,
-        csi_mode="perfect",
+        csi_mode=csi_mode, q_bits=q_bits,
     )
     random.seed(args.val_seed)
     np.random.seed(args.val_seed)
     torch.manual_seed(args.val_seed)
     val_set = generate_dataset(
         args.val_size, generator, include_queue_feature=False,
-        csi_mode="perfect",
+        csi_mode=csi_mode, q_bits=q_bits,
     )
     random.seed(args.test_seed)
     np.random.seed(args.test_seed)
     torch.manual_seed(args.test_seed)
     test_set = generate_dataset(
         args.test_size, generator, include_queue_feature=False,
-        csi_mode="perfect",
+        csi_mode=csi_mode, q_bits=q_bits,
     )
     atomic_pickle_dump(
         {"metadata": metadata, "train_set": train_set, "val_set": val_set},
@@ -218,6 +233,13 @@ def _output_audit(model, dataset):
 
 def main():
     args = parse_args()
+    csi_mode = str(args.csi_mode)
+    q_bits = int(args.q_bits) if args.q_bits is not None else None
+    if csi_mode == "quantized" and q_bits is None:
+        raise ValueError("--q-bits is required when --csi-mode is 'quantized'")
+    if csi_mode != "quantized" and q_bits is not None:
+        raise ValueError("--q-bits may only be set when --csi-mode is 'quantized'")
+
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -226,11 +248,12 @@ def main():
         "NUM_UAV": args.num_uav,
         "CHANNEL_MODEL": "rician",
         "RICIAN_K_DB": args.rician_k_db,
-        "CSI_MODE": "perfect",
+        "CSI_MODE": csi_mode,
+        "Q_BITS": q_bits,
     })
-    train_set, val_set, test_set, dataset_path = _load_or_generate(config, args)
+    train_set, val_set, test_set, dataset_path = _load_or_generate(config, args, csi_mode, q_bits)
     pool_size = int(args.prefix_pool_size or args.train_size)
-    dataset_metadata = expected_dataset_metadata(
+    dataset_metadata = expected_dataset_metadata_quantized(
         config,
         args.num_uav,
         {"train": args.seed, "val": args.val_seed, "test": args.test_seed},
@@ -239,6 +262,8 @@ def main():
             "val": args.val_size,
             "test": args.test_size,
         },
+        csi_mode,
+        q_bits,
     )
     model_seed = args.seed if args.model_seed is None else args.model_seed
     random.seed(model_seed)
@@ -272,7 +297,7 @@ def main():
     test_utility = float(trainer.evaluate(model, test_set, use_queue=False))
     audit = _output_audit(model, test_set)
     checkpoint_path = Path(args.checkpoint_out) if args.checkpoint_out else (
-        channel_checkpoint_path(config, args.num_uav)
+        channel_checkpoint_path(config, args.num_uav, args.train_size)
     )
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     final_checkpoint_path = (
@@ -284,7 +309,8 @@ def main():
         "model_version": "channel_gat_v1",
         "model_state_dict": model.state_dict(),
         "tx_power_dbm": float(config.get("TX_POWER", 10.0)),
-        "csi_mode": "perfect",
+        "csi_mode": csi_mode,
+        "quantization_bits": q_bits,
         "channel_model": "rician",
         "rician_k_db": float(args.rician_k_db),
         "num_uav": int(args.num_uav),
@@ -295,7 +321,8 @@ def main():
             "TX_POWER": float(config["TX_POWER"]),
             "CHANNEL_MODEL": "rician",
             "RICIAN_K_DB": float(args.rician_k_db),
-            "CSI_MODE": "perfect",
+            "CSI_MODE": csi_mode,
+            "Q_BITS": q_bits,
             "TRAIN_SIZE": int(args.train_size),
             "TRAIN_POOL_SIZE": pool_size,
             "VAL_SIZE": int(args.val_size),

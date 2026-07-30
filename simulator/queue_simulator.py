@@ -253,11 +253,15 @@ class QueueSimulator(BaseSimulator):
         model = self.model
         model.eval()
         self._sync_queue_features()
-        
+        try:
+            model_device = next(model.parameters()).device
+        except (AttributeError, StopIteration):
+            model_device = device
+
         with torch.no_grad():
-            x = state.vertex_features.to(device)
-            edge_index = state.edge_index.to(device)
-            edge_weights = state.edge_weights.to(device)
+            x = state.vertex_features.to(model_device)
+            edge_index = state.edge_index.to(model_device)
+            edge_weights = state.edge_weights.to(model_device)
 
             if hasattr(model, 'schedule_with_state'):
                 pi = model.schedule_with_state(state, self.queue_states).to(device)

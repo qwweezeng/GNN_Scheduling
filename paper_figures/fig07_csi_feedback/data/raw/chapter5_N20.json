@@ -1,0 +1,594 @@
+{
+  "experiment": "paper_mobile_imperfect_csi_v1",
+  "timestamp": "2026-07-28T04:51:33",
+  "frozen_git_revision": "ad2ee67d76e05effa4953db18ab677502ddd3ba1",
+  "settings": {
+    "config": "configs/paper.yaml",
+    "num_uav": 20,
+    "num_slots": 10000,
+    "arrival_rates": "2.4",
+    "seeds": "42",
+    "speeds_mps": "0",
+    "slots_per_block": "1",
+    "stale_blocks": "1",
+    "q_bits": 4,
+    "csi_methods": "latest,large_scale,quantized_2bit,quantized_4bit,quantized_6bit,quantized_8bit,quantized_10bit",
+    "rounds": 4,
+    "scheduler_variants": "gat_assisted",
+    "fplinq_iterations": 100,
+    "device": "cuda",
+    "output": "/workspace/GNN_Scheduling_codex/paper_figures/fig07_csi_feedback/data/raw/chapter5_N20.json"
+  },
+  "config_snapshot": {
+    "NUM_UAV": 20,
+    "AREA_WIDTH": 1000,
+    "HEIGHT_RANGE": [
+      50,
+      150
+    ],
+    "MIN_DISTANCE": 20,
+    "TX_POWER": 10.0,
+    "G_T": 0,
+    "G_R": 0,
+    "BANDWIDTH": 5000000.0,
+    "CARRIER_FREQ": 2400000000.0,
+    "NOISE_PSD": -169,
+    "SNR_GAP_DB": 0,
+    "SNR_THRES": 5,
+    "CHANNEL_MODEL": "rician",
+    "RICIAN_K_DB": 5.0,
+    "CSI_MODE": "perfect",
+    "Q_BITS": 4,
+    "NODE_RAW_DIM": 1,
+    "MLP_HIDDEN_DIMS": [
+      32,
+      32
+    ],
+    "NODE_EMBED_DIM": 32,
+    "EDGE_DIM": 1,
+    "NUM_HEADS": 4,
+    "GAT_OUT_DIM": 48,
+    "NUM_GAT_LAYERS": 4,
+    "SCHEDULE_HIDDEN": 32,
+    "DROPOUT": 0.0,
+    "ACTIVATION": "relu",
+    "LR": 0.0001,
+    "EPOCHS": 30,
+    "BATCH_SIZE": 1,
+    "TRAIN_SIZE": 300,
+    "VAL_SIZE": 128,
+    "TEST_SIZE": 128,
+    "GEN_BATCH_SIZE": 50,
+    "EVAL_INTERVAL": 1,
+    "LR_SCHEDULER_TYPE": "ReduceLROnPlateau",
+    "LR_SCHEDULER_CONFIG": {
+      "mode": "max",
+      "factor": 0.5,
+      "patience": 10,
+      "min_lr": 1e-05
+    },
+    "GRAD_CLIP_CONFIG": {
+      "explosion_threshold": 100,
+      "explosion_clip": 10.0,
+      "normal_clip": 5.0
+    },
+    "USE_QUEUE": false,
+    "USE_POWER_CONTROL": false,
+    "SLOT_DURATION": 0.001,
+    "PACKET_SIZE": 12000,
+    "MARGINAL_MP_ROUNDS": 4,
+    "RESULTS_DIR": "./results",
+    "LOG_DIR": "./logs",
+    "SAVE_MODEL": true,
+    "SEED": 10086,
+    "DEVICE": "auto",
+    "GPU_ID": 0
+  },
+  "scheduler_variants": [
+    "gat_assisted"
+  ],
+  "channel_gat_checkpoint": "results/models/paper/gat_numUAV=20_tx=10dBm_csi=perfect_channel=ricianK5dB.pth",
+  "channel_gat_checkpoint_sha256": "0c6f43334cb93491ec0e1a51408abe7eaefd98c3eb7215c304981eb9674c78ec",
+  "channel_gat_dataset_fingerprint": "695c93a4b341e2124d1f45c4cb58f8c3e30cd9d36b664fa8e8ff8c31f21c5c87",
+  "fairness": "All CSI modes share the same true Rician trajectory and arrivals; only scheduler-observed CSI changes; service uses current true CSI.",
+  "summary": {
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=latest": {
+      "delivered_throughput_mbps": {
+        "mean": 17.7372,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 17.7968484375,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.6107598859551259,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.3892401140448742,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 55.703748046875,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 906.3129693525472,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 2539.0,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.2567,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 0.0,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=large_scale": {
+      "delivered_throughput_mbps": {
+        "mean": 17.034,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 17.085071484375,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.5865460104954341,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.4134539895045659,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 60.7799296875,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 1060.1056710109194,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 3210.799999999996,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.509,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 2.921842575073242,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_2bit": {
+      "delivered_throughput_mbps": {
+        "mean": 16.086,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 16.123672265625,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.5539027312920953,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.4460972687079046,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 64.738693359375,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 1058.9794106676613,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 2057.0,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.416,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 5.716509819030762,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_4bit": {
+      "delivered_throughput_mbps": {
+        "mean": 17.0304,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 17.075860546875,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.5864220486756746,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.41357795132432545,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 61.006048828125,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 1046.5962514092446,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 3076.449999999999,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.5682,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 3.1964237689971924,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_8bit": {
+      "delivered_throughput_mbps": {
+        "mean": 17.3256,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 17.37004453125,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.5965869178959547,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.4034130821040453,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 59.52854296875,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 1028.8925058872421,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 3117.1499999999996,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.6005,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 2.9343225955963135,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_6bit": {
+      "delivered_throughput_mbps": {
+        "mean": 17.1204,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 17.17372734375,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.5895210941696624,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.4104789058303376,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 61.177828125,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 1167.713534730497,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 3862.0,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.5535,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 2.952653169631958,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_10bit": {
+      "delivered_throughput_mbps": {
+        "mean": 17.316,
+        "ci95": 0.0
+      },
+      "physical_service_mbps": {
+        "mean": 17.361558984375,
+        "ci95": 0.0
+      },
+      "successful_delivery_ratio": {
+        "mean": 0.5962563530432626,
+        "ci95": 0.0
+      },
+      "unfinished_packet_fraction": {
+        "mean": 0.4037436469567373,
+        "ci95": 0.0
+      },
+      "average_total_queue_backlog_mbit": {
+        "mean": 59.515125,
+        "ci95": 0.0
+      },
+      "average_packet_delay_ms": {
+        "mean": 1032.8250866250867,
+        "ci95": 0.0
+      },
+      "p95_packet_delay_ms": {
+        "mean": 3146.0,
+        "ci95": 0.0
+      },
+      "average_active_links": {
+        "mean": 1.6099,
+        "ci95": 0.0
+      },
+      "mean_csi_absolute_error_db": {
+        "mean": 2.9247853755950928,
+        "ci95": 0.0
+      }
+    }
+  },
+  "relative_to_latest": {
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=large_scale": {
+      "delivered_loss_fraction": {
+        "mean": 0.039645490832826064,
+        "ci95": 0.0
+      },
+      "backlog_increase_mbit": {
+        "mean": 5.076181640625002,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_2bit": {
+      "delivered_loss_fraction": {
+        "mean": 0.09309248359380301,
+        "ci95": 0.0
+      },
+      "backlog_increase_mbit": {
+        "mean": 9.034945312500007,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_4bit": {
+      "delivered_loss_fraction": {
+        "mean": 0.03984845409647527,
+        "ci95": 0.0
+      },
+      "backlog_increase_mbit": {
+        "mean": 5.302300781250004,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_8bit": {
+      "delivered_loss_fraction": {
+        "mean": 0.023205466477234284,
+        "ci95": 0.0
+      },
+      "backlog_increase_mbit": {
+        "mean": 3.8247949218750037,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_6bit": {
+      "delivered_loss_fraction": {
+        "mean": 0.03477437250524329,
+        "ci95": 0.0
+      },
+      "backlog_increase_mbit": {
+        "mean": 5.474080078124999,
+        "ci95": 0.0
+      }
+    },
+    "v=0|block=1|age=1|Lambda=2.4|scheduler=gat_assisted|method=quantized_10bit": {
+      "delivered_loss_fraction": {
+        "mean": 0.023746701846965836,
+        "ci95": 0.0
+      },
+      "backlog_increase_mbit": {
+        "mean": 3.8113769531249986,
+        "ci95": 0.0
+      }
+    }
+  },
+  "records": [
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "latest",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 17.7372,
+      "physical_service_mbps": 17.7968484375,
+      "successful_delivery_ratio": 0.6107598859551259,
+      "unfinished_packet_fraction": 0.3892401140448742,
+      "average_total_queue_backlog_mbit": 55.703748046875,
+      "average_packet_delay_ms": 906.3129693525472,
+      "p95_packet_delay_ms": 2539.0,
+      "average_active_links": 1.2567,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 0.0,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0009765625
+    },
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "large_scale",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 17.034,
+      "physical_service_mbps": 17.085071484375,
+      "successful_delivery_ratio": 0.5865460104954341,
+      "unfinished_packet_fraction": 0.4134539895045659,
+      "average_total_queue_backlog_mbit": 60.7799296875,
+      "average_packet_delay_ms": 1060.1056710109194,
+      "p95_packet_delay_ms": 3210.799999999996,
+      "average_active_links": 1.509,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 2.921842575073242,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0029296875
+    },
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "quantized_2bit",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 16.086,
+      "physical_service_mbps": 16.123672265625,
+      "successful_delivery_ratio": 0.5539027312920953,
+      "unfinished_packet_fraction": 0.4460972687079046,
+      "average_total_queue_backlog_mbit": 64.738693359375,
+      "average_packet_delay_ms": 1058.9794106676613,
+      "p95_packet_delay_ms": 2057.0,
+      "average_active_links": 1.416,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 5.716509819030762,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0
+    },
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "quantized_4bit",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 17.0304,
+      "physical_service_mbps": 17.075860546875,
+      "successful_delivery_ratio": 0.5864220486756746,
+      "unfinished_packet_fraction": 0.41357795132432545,
+      "average_total_queue_backlog_mbit": 61.006048828125,
+      "average_packet_delay_ms": 1046.5962514092446,
+      "p95_packet_delay_ms": 3076.449999999999,
+      "average_active_links": 1.5682,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 3.1964237689971924,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0
+    },
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "quantized_8bit",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 17.3256,
+      "physical_service_mbps": 17.37004453125,
+      "successful_delivery_ratio": 0.5965869178959547,
+      "unfinished_packet_fraction": 0.4034130821040453,
+      "average_total_queue_backlog_mbit": 59.52854296875,
+      "average_packet_delay_ms": 1028.8925058872421,
+      "p95_packet_delay_ms": 3117.1499999999996,
+      "average_active_links": 1.6005,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 2.9343225955963135,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0009765625
+    },
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "quantized_6bit",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 17.1204,
+      "physical_service_mbps": 17.17372734375,
+      "successful_delivery_ratio": 0.5895210941696624,
+      "unfinished_packet_fraction": 0.4104789058303376,
+      "average_total_queue_backlog_mbit": 61.177828125,
+      "average_packet_delay_ms": 1167.713534730497,
+      "p95_packet_delay_ms": 3862.0,
+      "average_active_links": 1.5535,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 2.952653169631958,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0009765625
+    },
+    {
+      "speed_mps": 0.0,
+      "slots_per_block": 1,
+      "stale_blocks": 1,
+      "csi_age_ms": 1.0,
+      "arrival_rate": 2.4,
+      "seed": 42,
+      "scheduler_variant": "gat_assisted",
+      "method": "quantized_10bit",
+      "arrival_profile": "link_hotspot_total",
+      "delivered_throughput_mbps": 17.316,
+      "physical_service_mbps": 17.361558984375,
+      "successful_delivery_ratio": 0.5962563530432626,
+      "unfinished_packet_fraction": 0.4037436469567373,
+      "average_total_queue_backlog_mbit": 59.515125,
+      "average_packet_delay_ms": 1032.8250866250867,
+      "p95_packet_delay_ms": 3146.0,
+      "average_active_links": 1.6099,
+      "average_hard_projection_rejections": 0.0,
+      "shared_uav_feasible_all_slots": true,
+      "mean_csi_absolute_error_db": 2.9247853755950928,
+      "packet_count_conservation_error": 0.0,
+      "packet_work_conservation_error": 0.0009765625
+    }
+  ]
+}

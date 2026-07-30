@@ -43,7 +43,7 @@ from utils.project_setup import proposed_gat_checkpoint_dir
 
 HERE = Path(__file__).resolve().parent
 
-SIZES = (10, 20, 30, 40, 60, 80, 100, 200, 300)
+SIZES = (10, 20, 30, 40, 60, 80, 100, 200, 300, 500)
 
 
 def call(cmd: list[str], env: dict | None = None) -> None:
@@ -58,6 +58,10 @@ def main() -> None:
         "--sizes", default=",".join(str(s) for s in SIZES),
         help=f"Comma-separated training sample sizes; default is {SIZES}",
     )
+    parser.add_argument(
+        "--train_size", type=int, default=None,
+        help="Run a single train_size (overrides --sizes). Use this to run n=500 alone.",
+    )
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--force", action="store_true")
@@ -70,7 +74,7 @@ def main() -> None:
     args = parser.parse_args()
 
     nodes = [int(x) for x in args.nodes.split(",") if x]
-    sizes = [int(x) for x in args.sizes.split(",") if x]
+    sizes = [args.train_size] if args.train_size is not None else [int(x) for x in args.sizes.split(",") if x]
     seeds = [int(x) for x in args.seeds.split(",") if x]
     fig02_root = (HERE / args.fig02_source).resolve()
 
@@ -82,6 +86,10 @@ def main() -> None:
                 )
                 training_json = artifact_dir / "training.json"
                 checkpoint_scope = "full_300" if train_size == 300 else f"prefix_n{train_size}"
+                # n=500 uses the same pool as n=300 but trains on the full set
+                is_full_500 = train_size == 500
+                if is_full_500:
+                    checkpoint_scope = "prefix_n500"
                 checkpoint_dir = proposed_gat_checkpoint_dir(
                     num_uav, model_seed, checkpoint_scope
                 )
@@ -134,7 +142,7 @@ def main() -> None:
                             "train/train_channel_gat_rician.py",
                             "--num_uav", str(num_uav),
                             "--train_size", str(train_size),
-                            "--prefix_pool_size", "300",
+                            "--prefix_pool_size", "500",
                             "--val_size", "128",
                             "--test_size", "128",
                             "--epochs", str(args.epochs),
@@ -151,10 +159,10 @@ def main() -> None:
                         call(cmd)
 
                 # ── Evaluation: best checkpoint ─────────────────────────────
-                _evaluate("best", best_checkpoint, artifact_dir, num_uav, args, args.gpu_id)
+                _evaluate("best", best_checkpoint, artifact_dir, num_uav, args, args.gpu_id, train_size)
 
                 # ── Evaluation: final checkpoint ────────────────────────────
-                _evaluate("final", final_checkpoint, artifact_dir, num_uav, args, args.gpu_id)
+                _evaluate("final", final_checkpoint, artifact_dir, num_uav, args, args.gpu_id, train_size)
 
 
 def _evaluate(
@@ -164,6 +172,7 @@ def _evaluate(
     num_uav: int,
     args: argparse.Namespace,
     gpu_id: int,
+    train_size: int,
 ) -> None:
     """Evaluate a single checkpoint with all three decision rules."""
     soft_out = artifact_dir / f"eval_{selection}_soft.json"
@@ -175,6 +184,7 @@ def _evaluate(
             sys.executable, "-u",
             "paper_figures/common/evaluate_channel_checkpoint_soft.py",
             "--num-uav", str(num_uav),
+            "--train_size", str(train_size),
             "--checkpoint", str(checkpoint),
             "--device", args.device,
             "--gpu-id", str(gpu_id),
@@ -186,6 +196,7 @@ def _evaluate(
             sys.executable, "-u",
             "paper_figures/common/evaluate_channel_checkpoint_hard.py",
             "--num-uav", str(num_uav),
+            "--train_size", str(train_size),
             "--checkpoint", str(checkpoint),
             "--device", args.device,
             "--gpu-id", str(gpu_id),
@@ -197,6 +208,7 @@ def _evaluate(
             sys.executable, "-u",
             "paper_figures/common/evaluate_channel_checkpoint.py",
             "--num-uav", str(num_uav),
+            "--train_size", str(train_size),
             "--checkpoint", str(checkpoint),
             "--device", args.device,
             "--gpu-id", str(gpu_id),

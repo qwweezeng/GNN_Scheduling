@@ -87,7 +87,7 @@ def main():
     (HERE / 'figures').mkdir(exist_ok=True)
 
     with paper_style():
-        mpl.rcParams.update({'font.size': 9, 'axes.labelsize': 8.5, 'xtick.labelsize': 8, 'ytick.labelsize': 8})
+        mpl.rcParams.update({'font.size': 7.5, 'axes.labelsize': 7.5, 'xtick.labelsize': 7, 'ytick.labelsize': 7, 'legend.fontsize': 6.5})
         fig, ax = plt.subplots(figsize=PANEL_SIZE)
         for n in nodes:
             curve = [r for r in rows if r['num_uav'] == n]
@@ -103,7 +103,7 @@ def main():
         save(fig, 'fig03_continuous_pi_statistics')
 
     with paper_style():
-        mpl.rcParams.update({'font.size': 9, 'axes.labelsize': 8.5, 'xtick.labelsize': 8, 'ytick.labelsize': 8})
+        mpl.rcParams.update({'font.size': 7.5, 'axes.labelsize': 7.5, 'xtick.labelsize': 7, 'ytick.labelsize': 7, 'legend.fontsize': 6.5})
         fig, ax = plt.subplots(figsize=PANEL_SIZE)
         for n in nodes:
             curve = [r for r in rows if r['num_uav'] == n]

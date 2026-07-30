@@ -240,7 +240,11 @@ def run_scheduler(
     track_packet_delay=True,
     delay_deadline_ms=None,
     buffer_size_mbit=None,
+    device="cpu",
 ):
+    device = torch.device(device)
+    if hasattr(scheduler, "to"):
+        scheduler = scheduler.to(device)
     simulator = QueueSimulator(
         network_generator=build_network_generator(config),
         model=scheduler,

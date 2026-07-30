@@ -91,7 +91,7 @@ def main() -> None:
                 label=f"N={num_uav}",
             )
         axis.set_xlabel("Training sample size")
-        axis.set_ylabel("Best validation utility (Mbit/s)")
+        axis.set_ylabel("Best validation utility (bit/s/Hz)")
         axis.spines[["top", "right"]].set_visible(False)
         axis.grid(axis="y", linestyle="--", linewidth=0.5)
         axis.get_xaxis().get_major_formatter().set_scientific(False)

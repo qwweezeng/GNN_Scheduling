@@ -1,0 +1,50 @@
+{
+  "schema": "fig06_in_out_distribution_audit_v1",
+  "protocol": {
+    "candidate": "pi >= 0.5",
+    "decoder": "one_round_endpoint_mutual_matching",
+    "priority": "pi * C_solo"
+  },
+  "results": {
+    "seed0": {
+      "N20": {
+        "rate_mbps_mean": 5.706135984510183,
+        "rate_mbps_sem": 1.3315351249245684,
+        "pi_mean": 0.002737910713221936,
+        "mean_snapshot_pi_max": 0.15140032486397104,
+        "candidate_links_mean": 0.28125,
+        "selected_links_mean": 0.1875,
+        "zero_candidate_fraction": 0.859375
+      },
+      "N40": {
+        "rate_mbps_mean": 177.0270385593176,
+        "rate_mbps_sem": 2.6493603216129125,
+        "pi_mean": 0.02205948330811225,
+        "mean_snapshot_pi_max": 0.9990000082179904,
+        "candidate_links_mean": 13.515625,
+        "selected_links_mean": 8.9921875,
+        "zero_candidate_fraction": 0.0
+      }
+    },
+    "seed10086": {
+      "N20": {
+        "rate_mbps_mean": 106.44057273864746,
+        "rate_mbps_sem": 2.0893150212107727,
+        "pi_mean": 0.0501440590742277,
+        "mean_snapshot_pi_max": 0.9990000016987324,
+        "candidate_links_mean": 7.6015625,
+        "selected_links_mean": 4.7421875,
+        "zero_candidate_fraction": 0.0
+      },
+      "N40": {
+        "rate_mbps_mean": 177.06925757229328,
+        "rate_mbps_sem": 2.6520689945811173,
+        "pi_mean": 0.02204471557342913,
+        "mean_snapshot_pi_max": 0.9989992235787213,
+        "candidate_links_mean": 13.4921875,
+        "selected_links_mean": 8.9921875,
+        "zero_candidate_fraction": 0.0
+      }
+    }
+  }
+}

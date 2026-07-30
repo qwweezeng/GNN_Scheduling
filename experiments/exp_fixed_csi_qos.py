@@ -6,6 +6,7 @@ and queue-growth metrics for MarginalMP and its baselines.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -66,6 +67,55 @@ def json_ready(value):
     if isinstance(value, np.generic):
         return value.item()
     return value
+
+
+def checkpoint_signature(path):
+    if not path:
+        return None
+    stat = Path(path).stat()
+    return {"path": str(path), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def task_fingerprint(args, config, method, arrival_lambda, seed, channel_path, queue_path):
+    payload = {
+        "schema": "fixed_csi_queue_task_v1",
+        "num_uav": int(args.num_uav),
+        "num_slots": int(args.num_slots),
+        "arrival_lambda": float(arrival_lambda),
+        "seed": int(seed),
+        "method": str(method),
+        "rounds": int(args.rounds),
+        "channel_model": str(config.get("CHANNEL_MODEL")),
+        "rician_k_db": float(config.get("RICIAN_K_DB", 5.0)),
+        "tx_power_dbm": float(config.get("TX_POWER", 10.0)),
+        "csi_mode": str(config.get("CSI_MODE", "perfect")),
+        "delay_deadline_ms": args.delay_deadline_ms,
+        "buffer_size_mbit": args.buffer_size_mbit,
+        "channel_checkpoint": checkpoint_signature(channel_path),
+        "end_to_end_queue_gat_checkpoint": checkpoint_signature(queue_path),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), payload
+
+
+def load_completed_task(path, fingerprint):
+    if not path.exists():
+        return None
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if payload.get("fingerprint") != fingerprint:
+        return None
+    return payload.get("metrics")
+
+
+def save_completed_task(path, fingerprint, metadata, metrics):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + ".tmp")
+    torch.save({
+        "fingerprint": fingerprint,
+        "metadata": metadata,
+        "metrics": metrics,
+    }, temp)
+    os.replace(temp, path)
 
 
 def method_factories(channel_model, queue_gat_model, include_mws, rounds):
@@ -226,14 +276,14 @@ def main():
             )
     else:
         channel_model, channel_path = None, None
+    queue_checkpoint_for_fingerprint = (
+        Path(args.end_to_end_gat_checkpoint)
+        if args.end_to_end_gat_checkpoint
+        else queue_checkpoint_path(config, args.num_uav)
+    )
     if needs_queue_gat:
-        queue_path = (
-            Path(args.end_to_end_gat_checkpoint)
-            if args.end_to_end_gat_checkpoint
-            else queue_checkpoint_path(config, args.num_uav)
-        )
         queue_gat_model, queue_model_path = load_end_to_end_queue_gat(
-            config, queue_path, device="cpu"
+            config, queue_checkpoint_for_fingerprint, device=device
         )
     else:
         queue_gat_model, queue_model_path = None, None
@@ -285,6 +335,7 @@ def main():
     ))
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    task_dir = output_dir / "tasks"
     aggregate = {}
     per_seed = {}
     trajectory_payload = {}
@@ -296,26 +347,39 @@ def main():
                 traces, seed, arrival_lambda
             )
             for name, (factory, include_queue_feature) in methods.items():
-                scheduler = factory(seed)
-                metrics = run_scheduler(
-                    config,
-                    state,
-                    arrivals,
-                    scheduler,
-                    include_queue_feature=include_queue_feature,
-                    track_packet_delay=True,
-                    delay_deadline_ms=args.delay_deadline_ms,
-                    buffer_size_mbit=args.buffer_size_mbit,
+                fingerprint, task_metadata = task_fingerprint(
+                    args, config, name, arrival_lambda, seed,
+                    channel_path, queue_checkpoint_for_fingerprint,
                 )
-                add_hotspot_metrics(
-                    metrics, profile, config.get("PACKET_SIZE", 12000)
-                )
+                task_path = task_dir / f"{fingerprint}.pt"
+                metrics = load_completed_task(task_path, fingerprint)
+                reused = metrics is not None
+                if not reused:
+                    scheduler = factory(seed)
+                    metrics = run_scheduler(
+                        config,
+                        state,
+                        arrivals,
+                        scheduler,
+                        include_queue_feature=include_queue_feature,
+                        track_packet_delay=True,
+                        delay_deadline_ms=args.delay_deadline_ms,
+                        buffer_size_mbit=args.buffer_size_mbit,
+                        device=device,
+                    )
+                    add_hotspot_metrics(
+                        metrics, profile, config.get("PACKET_SIZE", 12000)
+                    )
+                    save_completed_task(
+                        task_path, fingerprint, task_metadata, metrics
+                    )
                 runs_by_method[name].append(metrics)
                 per_seed[f"{name}|lambda={arrival_lambda:g}|seed={seed}"] = (
                     compact_run(metrics)
                 )
+                status = "reused" if reused else "completed"
                 print(
-                    f"  seed={seed:>3} {name:<28} "
+                    f"  seed={seed:>3} {name:<28} [{status}] "
                     f"dep={metrics['departure_total_rate_pps']:.3f} "
                     f"goodput={metrics['successful_packet_total_rate_pps']:.3f} "
                     f"backlog={metrics['average_queue_backlog_mbit']:.4f}Mb "
@@ -377,6 +441,8 @@ def main():
             else "no_deadline_core"
         ),
         "trace_cache": args.trace_cache or "generated_in_memory",
+        "resume_schema": "fixed_csi_queue_task_v1",
+        "resume_task_directory": str(task_dir),
         "topology_by_seed": traces.get("metadata", {}).get(
             "topology_by_seed", {}
         ),

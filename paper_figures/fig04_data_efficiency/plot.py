@@ -31,9 +31,9 @@ sys.path.insert(0, str(ROOT))
 
 from paper_figures.common.plot_style import NODE_COLORS, paper_style
 
-SIZES = (10, 20, 30, 40, 60, 80, 100, 200, 300)
+SIZES = (10, 20, 30, 40, 60, 80, 100, 200, 300, 500)
 EVALUATIONS = {
-    "soft": ("test_soft_utility_mbps", "Soft test utility (Mbit/s)", "soft_utility"),
+    "soft": ("test_soft_utility_mbps", "Soft utility (Mbit/s)", "soft_utility"),
     "hard": (
         "test_hard_unprojected_utility_mbps",
         "Hard unprojected test utility (Mbit/s)",
@@ -81,11 +81,11 @@ def _plot_metric(
     figure_dir.mkdir(parents=True, exist_ok=True)
     with paper_style():
         mpl.rcParams.update({
-            "font.size": 9,
-            "axes.labelsize": 9,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
-            "legend.fontsize": 8,
+            "font.size": 7.5,
+            "axes.labelsize": 7.5,
+            "xtick.labelsize": 7.0,
+            "ytick.labelsize": 7.0,
+            "legend.fontsize": 6.5,
         })
         fig, ax = plt.subplots(figsize=(3.5, 2.35))
         for num_uav in nodes:
@@ -112,9 +112,10 @@ def _plot_metric(
         ax.set_ylabel(ylabel)
         ax.spines[["top", "right"]].set_visible(False)
         ax.grid(axis="y", linestyle="--", linewidth=0.5)
-        ax.set_xticks(SIZES)
-        ax.set_xticklabels([str(size) for size in SIZES])
-        ax.legend(ncol=2, frameon=True, fontsize=8)
+        sparse = [10, 100, 200, 300]
+        ax.set_xticks(sparse)
+        ax.set_xticklabels([str(s) for s in sparse])
+        ax.legend(ncol=2, fontsize=6.5)
         fig.savefig(figure_dir / f"{filename_stem}.eps", format="eps", bbox_inches="tight")
         fig.savefig(figure_dir / f"{filename_stem}.jpg", format="jpg", dpi=300, bbox_inches="tight")
         plt.close(fig)
@@ -125,11 +126,11 @@ def _plot_best_validation(rows: list[dict[str, Any]], nodes: list[int]) -> None:
     figure_dir.mkdir(parents=True, exist_ok=True)
     with paper_style():
         mpl.rcParams.update({
-            "font.size": 9,
-            "axes.labelsize": 9,
-            "xtick.labelsize": 9,
-            "ytick.labelsize": 9,
-            "legend.fontsize": 8,
+            "font.size": 7.5,
+            "axes.labelsize": 7.5,
+            "xtick.labelsize": 7.0,
+            "ytick.labelsize": 7.0,
+            "legend.fontsize": 6.5,
         })
         fig, ax = plt.subplots(figsize=(3.5, 2.35))
         for num_uav in nodes:
@@ -148,12 +149,13 @@ def _plot_best_validation(rows: list[dict[str, Any]], nodes: list[int]) -> None:
                 label=f"N={num_uav}",
             )
         ax.set_xlabel("Number of training samples")
-        ax.set_ylabel("Best validation utility")
+        ax.set_ylabel("Soft utility (bit/s/Hz)")
         ax.spines[["top", "right"]].set_visible(False)
         ax.grid(axis="y", linestyle="--", linewidth=0.5)
-        ax.set_xticks(SIZES)
-        ax.set_xticklabels([str(size) for size in SIZES])
-        ax.legend(ncol=2, frameon=True, fontsize=8)
+        sparse = [10, 100, 200, 300]
+        ax.set_xticks(sparse)
+        ax.set_xticklabels([str(s) for s in sparse])
+        ax.legend(ncol=2, fontsize=6.5)
         fig.savefig(figure_dir / "fig04_best_validation_utility.eps", format="eps", bbox_inches="tight")
         fig.savefig(figure_dir / "fig04_best_validation_utility.jpg", format="jpg", dpi=300, bbox_inches="tight")
         plt.close(fig)

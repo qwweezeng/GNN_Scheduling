@@ -16,10 +16,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 METHODS = (
-    "Random,GAT-Assisted MarginalMP,Direct-Link MarginalMP,"
-    "GAT-Assisted LocalMax,Direct-Link LocalMax,End-to-End GAT-Q,"
-    "Hard-Conflict LGS,Centralized Greedy,Weighted FPLinQ"
+    "Random,Centralized Greedy,Weighted FPLinQ,Direct-Link LocalMax,"
+    "GAT-Assisted LocalMax,Direct-Link MarginalMP,GAT-Assisted MarginalMP"
 )
+ARRIVAL_RATES = "0.5,1.0,1.5,2.0,2.2,2.4,2.6,2.8,3.0,3.2,3.5,4.0,4.5,5.0"
 
 
 def call(command: list[str]) -> None:
@@ -29,11 +29,11 @@ def call(command: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--nodes", default="20,50")
+    parser.add_argument("--nodes", default="50")
     parser.add_argument("--slots", type=int, default=10000)
-    parser.add_argument("--seeds", default="42,43,44,45,46")
-    parser.add_argument("--lambdas", default="0.5,1,2,2.2,2.4,2.6,2.8,3,3.2")
-    parser.add_argument("--deadline-ms", default="none", choices=("none", "2000"))
+    parser.add_argument("--seeds", default="42")
+    parser.add_argument("--lambdas", default=ARRIVAL_RATES)
+    parser.add_argument("--deadline-ms", default="2000", choices=("none", "2000"))
     parser.add_argument("--end-to-end-checkpoint", default="")
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     args = parser.parse_args()
@@ -45,7 +45,8 @@ def main() -> None:
             "--num_uav", str(n), "--num_slots", str(args.slots),
             "--arrival_rates", args.lambdas, "--mc_seeds", args.seeds,
             "--rounds", "4", "--channel_model", "rician", "--rician_k_db", "5",
-            "--methods", METHODS, "--device", args.device, "--output_dir", str(output),
+            "--channel_model_num_uav", str(n), "--methods", METHODS,
+            "--device", args.device, "--output_dir", str(output),
         ]
         if args.deadline_ms != "none":
             command += ["--delay_deadline_ms", args.deadline_ms]

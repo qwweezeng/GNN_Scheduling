@@ -84,7 +84,7 @@ def render(rows: list[dict], output: Path) -> None:
         ax.grid(axis="x", visible=False)
         ax.spines[["top", "right"]].set_visible(False)
         ax.legend(ncol=3, loc="upper center", bbox_to_anchor=(0.5, 1.22),
-                  frameon=False, columnspacing=0.8, handlelength=1.1)
+                  columnspacing=0.8, handlelength=1.1)
         fig.subplots_adjust(left=0.13, right=0.99, bottom=0.25, top=0.78)
         output.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(output, format="eps")

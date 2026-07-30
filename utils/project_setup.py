@@ -38,7 +38,13 @@ def load_config(path="configs/paper.yaml"):
 def physics_tag(config):
     tx_power = float(config.get("TX_POWER", 10.0))
     tx_text = str(int(tx_power)) if tx_power.is_integer() else str(tx_power)
-    base = f"tx={tx_text}dBm_csi={config.get('CSI_MODE', 'perfect')}"
+    csi_mode = str(config.get("CSI_MODE", "perfect"))
+    if csi_mode == "quantized":
+        q_bits = config.get("Q_BITS")
+        csi_tag = f"quantized{int(q_bits)}bit" if q_bits is not None else "quantized"
+    else:
+        csi_tag = csi_mode
+    base = f"tx={tx_text}dBm_csi={csi_tag}"
     channel_model = str(config.get("CHANNEL_MODEL", "rayleigh")).lower()
     if channel_model == "rayleigh":
         return base
@@ -49,10 +55,11 @@ def physics_tag(config):
     return f"{base}_channel=ricianK{k_text}dB"
 
 
-def channel_checkpoint_path(config, train_num_uav):
-    return MODEL_DIR / (
-        f"gat_numUAV={int(train_num_uav)}_{physics_tag(config)}.pth"
-    )
+def channel_checkpoint_path(config, train_num_uav, train_size=None):
+    base = f"gat_numUAV={int(train_num_uav)}_{physics_tag(config)}"
+    if train_size is not None:
+        base += f"_trainSize={int(train_size)}"
+    return MODEL_DIR / f"{base}.pth"
 
 
 def queue_checkpoint_path(config, train_num_uav):
@@ -122,8 +129,9 @@ def load_channel_gat(
     device="cpu",
     *,
     expected_dataset_fingerprint=None,
+    train_size=None,
 ):
-    path = channel_checkpoint_path(config, train_num_uav)
+    path = channel_checkpoint_path(config, train_num_uav, train_size)
     if not path.exists():
         raise FileNotFoundError(f"Channel-only GAT checkpoint not found: {path}")
     checkpoint = torch.load(path, map_location=device, weights_only=False)

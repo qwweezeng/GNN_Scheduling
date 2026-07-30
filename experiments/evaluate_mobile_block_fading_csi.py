@@ -34,7 +34,7 @@ from utils.fixed_csi_benchmark import (  # noqa: E402
     arrival_trace_seed,
     generate_hotspot_arrivals,
 )
-from utils.artifacts import expected_dataset_metadata  # noqa: E402
+from utils.artifacts import expected_dataset_metadata_quantized  # noqa: E402
 from utils.project_setup import (  # noqa: E402
     build_network_generator,
     load_channel_gat,
@@ -113,6 +113,64 @@ def aggregate(records):
             if any(row.get(metric) is not None for row in rows)
         }
     return output
+
+
+def csi_checkpoint_config(base_config, method):
+    """Build the exact CSI condition used to train the model for one method."""
+    config = dict(base_config)
+    if method in {"latest", "stale"}:
+        config["CSI_MODE"] = "perfect"
+        config["Q_BITS"] = None
+    elif method == "large_scale":
+        config["CSI_MODE"] = "large_scale"
+        config["Q_BITS"] = None
+    elif method.startswith("quantized_") and method.endswith("bit"):
+        config["CSI_MODE"] = "quantized"
+        config["Q_BITS"] = int(method[len("quantized_"):-3])
+    else:
+        raise ValueError(f"unknown CSI method: {method}")
+    return config
+
+
+def load_matched_gat_models(base_config, num_uav, methods, device):
+    """Load one validated channel GAT per distinct scheduler-observed CSI mode."""
+    models = {}
+    provenance = {}
+    seeds = {"train": 10086, "val": 10087, "test": 10088}
+    sizes = {"train": 300, "val": 128, "test": 128}
+
+    model_by_condition = {}
+    provenance_by_condition = {}
+    for method in methods:
+        config = csi_checkpoint_config(base_config, method)
+        condition = (config["CSI_MODE"], config.get("Q_BITS"))
+        if condition in model_by_condition:
+            models[method] = model_by_condition[condition]
+            provenance[method] = dict(provenance_by_condition[condition])
+            continue
+        metadata = expected_dataset_metadata_quantized(
+            config, num_uav, seeds, sizes,
+            config["CSI_MODE"], config.get("Q_BITS"),
+        )
+        model, checkpoint = load_channel_gat(
+            config, num_uav, device=device,
+            expected_dataset_fingerprint=metadata["fingerprint"],
+        )
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        method_provenance = {
+            "checkpoint": checkpoint,
+            "checkpoint_sha256": hashlib.sha256(
+                Path(checkpoint).read_bytes()
+            ).hexdigest(),
+            "dataset_fingerprint": payload.get("dataset_fingerprint"),
+            "csi_mode": config["CSI_MODE"],
+            "q_bits": config.get("Q_BITS"),
+        }
+        model_by_condition[condition] = model
+        provenance_by_condition[condition] = method_provenance
+        models[method] = model
+        provenance[method] = dict(method_provenance)
+    return models, provenance
 
 
 def relative_to_latest(records):
@@ -214,25 +272,18 @@ def main():
         for name in methods if name.startswith("quantized_")
     })) or (int(args.q_bits),)
 
-    channel_model = channel_checkpoint = checkpoint_fingerprint = None
+    gat_models = {}
+    gat_provenance = {}
     if "gat_assisted" in scheduler_variants:
-        canonical = expected_dataset_metadata(
-            config, args.num_uav,
-            {"train": 10086, "val": 10087, "test": 10088},
-            {"train": 300, "val": 128, "test": 128},
+        gat_models, gat_provenance = load_matched_gat_models(
+            config, args.num_uav, methods, device
         )
-        channel_model, channel_checkpoint = load_channel_gat(
-            config, args.num_uav, device=device,
-            expected_dataset_fingerprint=canonical["fingerprint"],
-        )
-        checkpoint_payload = torch.load(
-            channel_checkpoint, map_location="cpu", weights_only=False
-        )
-        checkpoint_fingerprint = checkpoint_payload.get("dataset_fingerprint")
 
-    def make_scheduler(variant):
+    def make_scheduler(variant, method):
         if variant == "gat_assisted":
-            return GATAssistedMarginalMP(channel_model, rounds=args.rounds).eval()
+            return GATAssistedMarginalMP(
+                gat_models[method], rounds=args.rounds
+            ).eval()
         if variant == "direct_link":
             return DirectLinkMarginalMP(rounds=args.rounds).eval()
         if variant == "weighted_fplinq":
@@ -240,9 +291,18 @@ def main():
         raise AssertionError(variant)
     output = Path(args.output)
     progress = output.with_suffix(".progress.json")
+    requested_seeds = set(csv_values(args.seeds, int))
+    requested_methods = set(methods)
+    requested_variants = set(scheduler_variants)
     records = []
     if progress.exists():
-        records = json.loads(progress.read_text(encoding="utf-8"))["records"]
+        prior_records = json.loads(progress.read_text(encoding="utf-8"))["records"]
+        records = [
+            row for row in prior_records
+            if row["seed"] in requested_seeds
+            and row["method"] in requested_methods
+            and row.get("scheduler_variant", "direct_link") in requested_variants
+        ]
     completed = {
         (
             row["speed_mps"], row["slots_per_block"], row["stale_blocks"],
@@ -286,11 +346,12 @@ def main():
                                     csi_mode = "quantized"
                                     kwargs["q_bits"] = int(method[len("quantized_"):-3])
                                 metrics = run_mobile_queue_simulation(
-                                    generator, make_scheduler(scheduler_variant), trace, arrivals,
+                                    generator, make_scheduler(scheduler_variant, method), trace, arrivals,
                                     csi_mode=csi_mode, q_bits=kwargs.pop("q_bits", args.q_bits),
                                     packet_size=int(config["PACKET_SIZE"]), **kwargs,
                                 )
                                 row = {
+                                    "num_uav": args.num_uav,
                                     "speed_mps": speed,
                                     "slots_per_block": block_slots,
                                     "stale_blocks": age,
@@ -321,18 +382,13 @@ def main():
                                 )
 
     payload = {
-        "experiment": "paper_mobile_imperfect_csi_v1",
+        "experiment": "paper_mobile_imperfect_csi_v2_matched_models",
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "frozen_git_revision": "ad2ee67d76e05effa4953db18ab677502ddd3ba1",
         "settings": vars(args),
         "config_snapshot": config,
         "scheduler_variants": scheduler_variants,
-        "channel_gat_checkpoint": channel_checkpoint,
-        "channel_gat_checkpoint_sha256": (
-            hashlib.sha256(Path(channel_checkpoint).read_bytes()).hexdigest()
-            if channel_checkpoint is not None else None
-        ),
-        "channel_gat_dataset_fingerprint": checkpoint_fingerprint,
+        "gat_checkpoint_provenance_by_method": gat_provenance,
         "fairness": (
             "All CSI modes share the same true Rician trajectory and arrivals; "
             "only scheduler-observed CSI changes; service uses current true CSI."
