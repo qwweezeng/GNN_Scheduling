@@ -8,12 +8,10 @@ data/*.cnf
 *.csv
 *.xml
 .idea
-result_*
 .idea
 .ipynb_checkpoints
 __pycache__
 res_*
-general*
 gcnwts1
 *.png
 *.out
