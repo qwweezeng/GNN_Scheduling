@@ -1,28 +1,13 @@
-# Python-generated files
+# Python caches
 __pycache__/
 *.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-.DS_Store
 
-# Virtual environments
-events.out.tfevents.*
+# Virtual environment
 .venv/
-.pytest_cache/
 
-# Datasets and runtime logs are too large for GitHub
+# Large datasets and runtime artifacts
+.DS_Store
 datasets/
 logs/
 repro_independent_logs/
-
-# Generated model weights and checkpoints are distributed separately from source.
-checkpoints/
-results/models/
-
-# Large reproducibility artifacts remain local or in the data archive.
 paper_figures/fig05_dynamic_queue/data/
-paper_figures/fig06_cross_n/data/raw/cross_n_raw.json
-
-uav_network_init.png
