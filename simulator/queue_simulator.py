@@ -265,6 +265,9 @@ class QueueSimulator(BaseSimulator):
 
             if hasattr(model, 'schedule_with_state'):
                 pi = model.schedule_with_state(state, self.queue_states).to(device)
+                scheduler_diagnostics = getattr(
+                    model, 'last_diagnostics', None
+                )
                 from utils.feasibility import project_shared_uav_feasible
                 pi, hard_feasibility = project_shared_uav_feasible(
                     pi.detach().cpu(), state.links,
@@ -285,6 +288,7 @@ class QueueSimulator(BaseSimulator):
                     'active_mask': active_mask,
                     'active_indices': active_indices,
                     'hard_feasibility': hard_feasibility,
+                    'scheduler_diagnostics': scheduler_diagnostics,
                 }
 
             # 非队列感知模型（GAT-base）只吃 SNR 特征，slice 掉队列维度
@@ -448,6 +452,13 @@ class QueueSimulator(BaseSimulator):
         )
         self.history['rates'].append(link_rates.detach().cpu().clone())
         self.history['utilities'].append(utility)
+        hard_feasibility = schedule_result.get('hard_feasibility', {})
+        self.history['hard_projection_rejections'].append(
+            len(hard_feasibility.get('rejected_project_link_indices', []))
+        )
+        diagnostics = schedule_result.get('scheduler_diagnostics')
+        if diagnostics:
+            self.history['scheduler_diagnostics'].append(diagnostics)
         
         # 更新 NetworkState 中的队列（用于下一时隙的特征输入）
         self._sync_queue_features()
@@ -808,6 +819,9 @@ class QueueSimulator(BaseSimulator):
             ),
             'average_active_empty_links': float(active_empty_per_slot.mean()),
             'average_mws_utility': float(np.mean(self.history['utilities'])),
+            'average_hard_projection_rejections': float(np.mean(
+                self.history['hard_projection_rejections']
+            )),
 
             # 队列轨迹（用于绘图）
             'queue_trajectory': queue_lengths.cpu().numpy(),
@@ -838,8 +852,72 @@ class QueueSimulator(BaseSimulator):
                 throughput_ratio >= 0.95 and queue_growth_slope <= 0.01
             ),
         }
+
+        diagnostics = self._summarize_scheduler_diagnostics(
+            self.history.get('scheduler_diagnostics', [])
+        )
+        metrics['scheduler_diagnostics_summary'] = diagnostics
+        metrics.update(diagnostics)
         
         return metrics
+
+    @staticmethod
+    def _summarize_scheduler_diagnostics(records):
+        """Reduce per-slot MP records to small scalar experiment metrics."""
+        if not records:
+            return {}
+
+        def values(key):
+            return [
+                float(value)
+                for record in records
+                for value in record.get(key, [])
+            ]
+
+        def mean(key):
+            items = values(key)
+            return float(np.mean(items)) if items else 0.0
+
+        utility_deltas = values('conflict_graph_utility_delta_per_round')
+        disjoint = [
+            bool(value)
+            for record in records
+            for value in record.get(
+                'accepted_neighborhoods_disjoint_per_round', []
+            )
+        ]
+        feasible = [
+            bool(record.get('hard_feasibility_final', {}).get('feasible'))
+            for record in records
+        ]
+        return {
+            'mp_protocol_version': records[0].get('protocol_version'),
+            'average_mp_positive_proposals': mean(
+                'positive_proposals_per_round'
+            ),
+            'average_mp_accepted_toggles': mean(
+                'accepted_toggles_per_round'
+            ),
+            'average_mp_accepted_joins': mean('accepted_joins_per_round'),
+            'average_mp_accepted_leaves': mean('accepted_leaves_per_round'),
+            'average_mp_rate_variation_messages': mean(
+                'rate_variation_messages_per_round'
+            ),
+            'average_mp_proposal_messages': mean(
+                'proposal_messages_per_round'
+            ),
+            'average_mp_confirmation_messages': mean(
+                'confirmation_messages_per_round'
+            ),
+            'average_mp_endpoint_confirmations': mean(
+                'endpoint_confirmations_per_round'
+            ),
+            'minimum_mp_local_utility_delta': (
+                float(min(utility_deltas)) if utility_deltas else 0.0
+            ),
+            'mp_all_neighborhoods_disjoint': all(disjoint),
+            'mp_all_slots_feasible': all(feasible),
+        }
     
     @staticmethod
     def _queue_growth_slope(queue_lengths, window=100):

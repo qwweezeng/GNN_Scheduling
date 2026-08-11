@@ -10,6 +10,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+from models.marginal_mp import MARGINAL_PROTOCOL_VERSION
+
 CSI_CASES = (
     ("perfect", None, "perfect"),
     ("large_scale", None, "large_scale"),
@@ -41,6 +45,8 @@ def mobile_complete(path: Path, expected_methods: set[str]) -> bool:
         return False
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("experiment") != "paper_mobile_imperfect_csi_v2_matched_models":
+        return False
+    if payload.get("marginal_protocol_version") != MARGINAL_PROTOCOL_VERSION:
         return False
     records = payload.get("records", [])
     return expected_methods.issubset({record["method"] for record in records})
@@ -85,8 +91,15 @@ def resume_chapter4(num_uav: int, device: str, epochs: int) -> None:
         call(evaluate)
 
 
-def resume_chapter5(num_uav: int, slots: int, seeds: str, arrival_rate: str, device: str) -> None:
-    output = HERE / "data/raw" / f"chapter5_N{num_uav}_v2_matched_csi.json"
+def resume_chapter5(
+    num_uav: int,
+    slots: int,
+    seeds: str,
+    arrival_rate: str,
+    device: str,
+    output_root: Path,
+) -> None:
+    output = output_root / f"chapter5_N{num_uav}_v2_matched_csi.json"
     progress = output.with_suffix(".progress.json")
     expected = set(MOBILE_METHODS.split(","))
     if mobile_complete(output, expected) or mobile_complete(progress, expected):
@@ -114,7 +127,18 @@ def main() -> None:
         help="Comma-separated chapters to run: 4, 5, or 4,5 (default).",
     )
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
+    parser.add_argument(
+        "--chapter5-output-root",
+        default="",
+        help="Optional new Chapter V result root; existing paper data is untouched.",
+    )
     args = parser.parse_args()
+    chapter5_output_root = (
+        Path(args.chapter5_output_root)
+        if args.chapter5_output_root else HERE / "data/raw"
+    )
+    if not chapter5_output_root.is_absolute():
+        chapter5_output_root = ROOT / chapter5_output_root
 
     chapters = {int(value) for value in args.chapters.split(",") if value.strip()}
     if not chapters or not chapters.issubset({4, 5}):
@@ -125,7 +149,12 @@ def main() -> None:
             resume_chapter4(num_uav, args.device, args.epochs)
         if 5 in chapters:
             resume_chapter5(
-                num_uav, args.slots, args.seeds, args.arrival_rate, args.device
+                num_uav,
+                args.slots,
+                args.seeds,
+                args.arrival_rate,
+                args.device,
+                chapter5_output_root,
             )
 
 

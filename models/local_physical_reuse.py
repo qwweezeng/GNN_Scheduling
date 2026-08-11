@@ -162,7 +162,7 @@ class QueueChannelLocalMaxScheduler:
             )
         self.channel_model = channel_model
         self.priority_mode = priority_mode
-        self._channel_score_cache = {}
+        self._channel_rate_cache = {}
 
     def eval(self):
         if hasattr(self.channel_model, "eval"):
@@ -170,32 +170,34 @@ class QueueChannelLocalMaxScheduler:
         return self
 
     def clear_cache(self):
-        self._channel_score_cache.clear()
+        self._channel_rate_cache.clear()
 
     def _expected_rate(self, state, device):
+        key = (id(state), str(device), self.priority_mode)
+        cached = self._channel_rate_cache.get(key)
+        if cached is not None and cached[0] is state:
+            return cached[1]
+
         direct, source, target, edge_gain = local_edge_gains(state)
         noise = torch.as_tensor(state.noise_power, dtype=torch.float32).cpu()
         snr_gap = float(getattr(state, "snr_gap", 1.0))
 
         if self.priority_mode == "solo_rate":
-            return torch.log2(1.0 + direct / noise / snr_gap).to(device)
+            rate = torch.log2(1.0 + direct / noise / snr_gap).to(device)
+            self._channel_rate_cache[key] = (state, rate)
+            return rate
 
-        key = (id(state), str(device))
-        cached = self._channel_score_cache.get(key)
-        logits = cached[1] if cached is not None and cached[0] is state else None
-        if logits is None:
-            with torch.no_grad():
-                if hasattr(self.channel_model, "schedule_logits_with_state"):
-                    logits, _ = self.channel_model.schedule_logits_with_state(state)
-                    logits = logits.to(device)
-                else:
-                    logits, _ = self.channel_model.schedule_logits(
-                        state.vertex_features[:, :1].to(device),
-                        state.edge_index.to(device),
-                        state.edge_weights.to(device),
-                    )
-            logits = logits.detach()
-            self._channel_score_cache[key] = (state, logits)
+        with torch.no_grad():
+            if hasattr(self.channel_model, "schedule_logits_with_state"):
+                logits, _ = self.channel_model.schedule_logits_with_state(state)
+                logits = logits.to(device)
+            else:
+                logits, _ = self.channel_model.schedule_logits(
+                    state.vertex_features[:, :1].to(device),
+                    state.edge_index.to(device),
+                    state.edge_weights.to(device),
+                )
+        logits = logits.detach()
 
         expected_interference = torch.zeros_like(direct)
         if source.numel() > 0:
@@ -203,10 +205,12 @@ class QueueChannelLocalMaxScheduler:
             expected_interference.index_add_(
                 0, target, edge_gain * expected_activity[source]
             )
-        return torch.log2(
+        rate = torch.log2(
             1.0
             + direct / (expected_interference + noise) / snr_gap
         ).to(device)
+        self._channel_rate_cache[key] = (state, rate)
+        return rate
 
     def schedule_with_state(self, state, queues):
         queues = torch.as_tensor(queues, dtype=torch.float32).reshape(-1)

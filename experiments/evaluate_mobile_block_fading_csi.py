@@ -25,6 +25,7 @@ from baseline.queue_schedulers import WeightedFPLinQScheduler  # noqa: E402
 from models.marginal_mp import (  # noqa: E402
     DirectLinkMarginalMP,
     GATAssistedMarginalMP,
+    MARGINAL_PROTOCOL_VERSION,
 )
 from simulator.mobile_block_fading import (  # noqa: E402
     generate_mobile_block_fading_trace,
@@ -296,13 +297,14 @@ def main():
     requested_variants = set(scheduler_variants)
     records = []
     if progress.exists():
-        prior_records = json.loads(progress.read_text(encoding="utf-8"))["records"]
-        records = [
-            row for row in prior_records
-            if row["seed"] in requested_seeds
-            and row["method"] in requested_methods
-            and row.get("scheduler_variant", "direct_link") in requested_variants
-        ]
+        prior = json.loads(progress.read_text(encoding="utf-8"))
+        if prior.get("marginal_protocol_version") == MARGINAL_PROTOCOL_VERSION:
+            records = [
+                row for row in prior["records"]
+                if row["seed"] in requested_seeds
+                and row["method"] in requested_methods
+                and row.get("scheduler_variant", "direct_link") in requested_variants
+            ]
     completed = {
         (
             row["speed_mps"], row["slots_per_block"], row["stale_blocks"],
@@ -369,7 +371,11 @@ def main():
                                 records.append(row)
                                 progress.parent.mkdir(parents=True, exist_ok=True)
                                 progress.write_text(
-                                    json.dumps({"settings": vars(args), "records": records}, indent=2),
+                                    json.dumps({
+                                        "settings": vars(args),
+                                        "marginal_protocol_version": MARGINAL_PROTOCOL_VERSION,
+                                        "records": records,
+                                    }, indent=2),
                                     encoding="utf-8",
                                 )
                                 print(
@@ -388,6 +394,8 @@ def main():
         "settings": vars(args),
         "config_snapshot": config,
         "scheduler_variants": scheduler_variants,
+        "marginal_protocol_version": MARGINAL_PROTOCOL_VERSION,
+        "catalog_policy": "initial_mean_power_persistent_with_block_availability",
         "gat_checkpoint_provenance_by_method": gat_provenance,
         "fairness": (
             "All CSI modes share the same true Rician trajectory and arrivals; "

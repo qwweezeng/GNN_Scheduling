@@ -129,10 +129,19 @@ def main() -> None:
     p.add_argument("--profile", choices=("no_deadline", "deadline_2000ms"), default="deadline_2000ms")
     p.add_argument("--nodes", default="50")
     p.add_argument(
+        "--raw-root",
+        default="",
+        help="Optional result root created by run.py --output-root.",
+    )
+    p.add_argument(
         "--metrics", default=",".join(METRICS),
         help="Comma-separated panel names; defaults to all standard panels.",
     )
-    args = p.parse_args(); raw = HERE / "data/raw" / args.profile
+    args = p.parse_args()
+    raw_root = Path(args.raw_root) if args.raw_root else HERE / "data/raw"
+    if not raw_root.is_absolute():
+        raw_root = ROOT / raw_root
+    raw = raw_root / args.profile
     selected_metrics = tuple(x.strip() for x in args.metrics.split(",") if x.strip())
     unknown_metrics = set(selected_metrics) - set(METRICS)
     if unknown_metrics:

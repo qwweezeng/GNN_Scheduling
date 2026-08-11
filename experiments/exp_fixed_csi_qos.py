@@ -28,6 +28,7 @@ from baseline.distgcn_adapter import DistGCNQueueScheduler
 from models.marginal_mp import (
     DirectLinkMarginalMP,
     GATAssistedMarginalMP,
+    MARGINAL_PROTOCOL_VERSION,
 )
 from models.initial_schedule_construction import (
     DirectLinkLocalMaxScheduler,
@@ -89,11 +90,19 @@ def task_fingerprint(args, config, method, arrival_lambda, seed, channel_path, q
         "rician_k_db": float(config.get("RICIAN_K_DB", 5.0)),
         "tx_power_dbm": float(config.get("TX_POWER", 10.0)),
         "csi_mode": str(config.get("CSI_MODE", "perfect")),
+        "catalog_policy": "instantaneous_snr_snapshot",
         "delay_deadline_ms": args.delay_deadline_ms,
         "buffer_size_mbit": args.buffer_size_mbit,
         "channel_checkpoint": checkpoint_signature(channel_path),
         "end_to_end_queue_gat_checkpoint": checkpoint_signature(queue_path),
     }
+    if method in {"Direct-Link MarginalMP", "GAT-Assisted MarginalMP"}:
+        payload["marginal_protocol_version"] = MARGINAL_PROTOCOL_VERSION
+        payload["scheduler_model_version"] = (
+            "direct_mp_local_coordination_v1"
+            if method == "Direct-Link MarginalMP"
+            else "gat_mp_local_coordination_v1"
+        )
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest(), payload
 
@@ -421,6 +430,8 @@ def main():
         "end_to_end_queue_gat_checkpoint": queue_model_path,
         "marginal_mp_rounds": args.rounds,
         "marginal_mp_initializer": "LocalMax (no Join)",
+        "marginal_protocol_version": MARGINAL_PROTOCOL_VERSION,
+        "catalog_policy": "instantaneous_snr_snapshot",
         "mws_note": (
             "Centralized full-information greedy reference; not an optimum "
             "or mathematical upper bound."

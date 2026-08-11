@@ -62,5 +62,29 @@ class PacketDelayTrackingTest(unittest.TestCase):
         self.assertEqual(tracker.queue_states.item(), 0.0)
 
 
+class SchedulerDiagnosticsTest(unittest.TestCase):
+    def test_mp_diagnostics_are_reduced_to_scalar_metrics(self):
+        records = [{
+            "protocol_version": "local_v1",
+            "positive_proposals_per_round": [4, 2],
+            "accepted_toggles_per_round": [2, 1],
+            "accepted_joins_per_round": [1, 1],
+            "accepted_leaves_per_round": [1, 0],
+            "rate_variation_messages_per_round": [8, 3],
+            "proposal_messages_per_round": [12, 5],
+            "confirmation_messages_per_round": [6, 2],
+            "endpoint_confirmations_per_round": [2, 2],
+            "conflict_graph_utility_delta_per_round": [3.0, 0.5],
+            "accepted_neighborhoods_disjoint_per_round": [True, True],
+            "hard_feasibility_final": {"feasible": True},
+        }]
+        summary = QueueSimulator._summarize_scheduler_diagnostics(records)
+        self.assertEqual(summary["average_mp_positive_proposals"], 3.0)
+        self.assertEqual(summary["average_mp_accepted_toggles"], 1.5)
+        self.assertEqual(summary["minimum_mp_local_utility_delta"], 0.5)
+        self.assertTrue(summary["mp_all_neighborhoods_disjoint"])
+        self.assertTrue(summary["mp_all_slots_feasible"])
+
+
 if __name__ == "__main__":
     unittest.main()

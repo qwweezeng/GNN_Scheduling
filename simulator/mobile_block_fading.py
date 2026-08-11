@@ -493,8 +493,8 @@ def run_mobile_queue_simulation(
             )
             if not torch.equal(persistent_indices, true_indices):
                 raise RuntimeError("Observed and true state lost link-identity alignment")
-            if hasattr(scheduler, "localmax") and hasattr(scheduler.localmax, "clear_cache"):
-                scheduler.localmax.clear_cache()
+            if hasattr(scheduler, "clear_cache"):
+                scheduler.clear_cache()
             if observed_power_by_block is None:
                 csi_errors.append(csi_error_db(
                     net_gen, trace, block_index, csi_mode, q_bits,

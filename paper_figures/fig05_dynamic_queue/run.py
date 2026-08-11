@@ -36,10 +36,21 @@ def main() -> None:
     parser.add_argument("--deadline-ms", default="2000", choices=("none", "2000"))
     parser.add_argument("--end-to-end-checkpoint", default="")
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
+    parser.add_argument(
+        "--output-root",
+        default="",
+        help="Optional new result root. The historical paper directory is used only when omitted.",
+    )
     args = parser.parse_args()
+    output_root = (
+        Path(args.output_root)
+        if args.output_root else HERE / "data/raw"
+    )
+    if not output_root.is_absolute():
+        output_root = ROOT / output_root
     for n in [int(x) for x in args.nodes.split(",") if x.strip()]:
         profile = "no_deadline" if args.deadline_ms == "none" else "deadline_2000ms"
-        output = HERE / "data/raw" / profile / f"N{n}"
+        output = output_root / profile / f"N{n}"
         command = [
             sys.executable, "-u", "experiments/exp_fixed_csi_qos.py",
             "--num_uav", str(n), "--num_slots", str(args.slots),

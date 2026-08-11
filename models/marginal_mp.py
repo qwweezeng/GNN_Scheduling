@@ -1,16 +1,16 @@
-"""Marginal-Utility Message-Passing Scheduling (MarginalMP).
+"""Chapter V: GAT-assisted marginal message passing.
 
-MarginalMP refines a reliable binary initial schedule for a fixed number of
-rounds.  In every round, each inactive link evaluates the exact queue-weighted
-utility change caused by joining the current active set, while each active link
-evaluates the exact change caused by leaving it.  Positive proposals contend
-with conflict neighbors, and conflict-local maxima update in parallel.
+The code follows the order of Algorithm 2 in the paper:
 
-The implementation is model-driven rather than a learned MPNN.  The paper-main
-variant reuses the channel GAT in its initial-schedule constructor; all
-marginal-utility messages below are still derived directly from the observed
-SINR model.  The Direct-Link initializer is retained as the mandatory no-GAT
-ablation.
+1. build a queue-aware LocalMax schedule;
+2. compute one graph-local toggle marginal per link;
+3. confirm proposals over closed coordination neighborhoods;
+4. confirm joining proposals at both UAV endpoints;
+5. apply the confirmed toggles in parallel.
+
+Only direct-link powers and powers carried by conflict-graph edges are used in
+the marginal stage.  The full received-power matrix is never used to account
+for non-conflict physical externalities.
 """
 
 import torch
@@ -19,118 +19,228 @@ from models.initial_schedule_construction import (
     DirectLinkLocalMaxScheduler,
     GATAssistedLocalMaxScheduler,
 )
-from models.local_physical_reuse import (
-    _signal_power_matrix,
-    select_local_positive_maxima,
-)
-from utils.feasibility import (
-    project_shared_uav_feasible,
-    shared_uav_action_audit,
-)
+from models.local_physical_reuse import local_edge_gains
+from utils.feasibility import shared_uav_action_audit
 
 
-PAPER_METHOD_NAME = "Marginal-Utility Message-Passing Scheduling"
-PAPER_METHOD_ACRONYM = "MarginalMP"
-DIRECT_LINK_METHOD_NAME = "Direct-Link MarginalMP"
-GAT_ASSISTED_METHOD_NAME = "GAT-Assisted MarginalMP"
+PAPER_METHOD_NAME = "GAT-Assisted Marginal Message Passing"
+PAPER_METHOD_ACRONYM = "GAT-MP"
+DIRECT_LINK_METHOD_NAME = "Direct-MP"
+GAT_ASSISTED_METHOD_NAME = "GAT-MP"
+
+MARGINAL_PROTOCOL_VERSION = "conflict_graph_local_coordination_v1"
 
 
-def exact_link_toggle_marginals(state, queues, action):
-    """Return the exact utility change from toggling every individual link.
-
-    For the current active set A, an inactive link receives
-    ``U(A union {i}) - U(A)`` and an active link receives
-    ``U(A without {i}) - U(A)``.  Only active receivers have nonzero
-    externality terms, so the physical-message tensors have O(L|A|), rather
-    than O(L^2), storage.
-    """
-    queues = torch.as_tensor(queues, dtype=torch.float32).reshape(-1).cpu()
-    active = torch.as_tensor(action, dtype=torch.bool).reshape(-1).cpu()
-    signal_power = _signal_power_matrix(state)
-    links = state.links.detach().cpu()
-    link_tx, link_rx = links[:, 0], links[:, 1]
-    direct = signal_power[link_tx, link_rx].float()
-    noise = float(state.noise_power)
-    gap = float(getattr(state, "snr_gap", 1.0))
-    active_indices = torch.nonzero(active, as_tuple=True)[0]
-
-    if active_indices.numel() > 0:
-        gain_from_active = signal_power[
-            link_tx[active_indices, None], link_rx[None, :]
-        ].float()
-        gain_from_active[
-            torch.arange(active_indices.numel()), active_indices
-        ] = 0.0
-        interference = gain_from_active.sum(dim=0)
-
-        gain_to_active = signal_power[
-            link_tx[:, None], link_rx[active_indices][None, :]
-        ].float()
-        gain_to_active[
-            active_indices, torch.arange(active_indices.numel())
-        ] = 0.0
-    else:
-        interference = torch.zeros_like(direct)
-        gain_to_active = torch.empty(
-            (queues.numel(), 0), dtype=direct.dtype
-        )
-
-    rates = torch.log2(1.0 + direct / (interference + noise) / gap)
-    if active_indices.numel() > 0:
-        active_direct = direct[active_indices]
-        active_interference = interference[active_indices]
-        active_rates = rates[active_indices]
-        active_queues = queues[active_indices]
-
-        rates_after_add = torch.log2(
-            1.0
-            + active_direct.unsqueeze(0)
-            / (active_interference.unsqueeze(0) + gain_to_active + noise)
-            / gap
-        )
-        rates_after_remove = torch.log2(
-            1.0
-            + active_direct.unsqueeze(0)
-            / (
-                (active_interference.unsqueeze(0) - gain_to_active).clamp_min(0.0)
-                + noise
-            )
-            / gap
-        )
-        add_externality = (
-            (rates_after_add - active_rates.unsqueeze(0))
-            * active_queues.unsqueeze(0)
-        ).sum(dim=1)
-        remove_externality = (
-            (rates_after_remove - active_rates.unsqueeze(0))
-            * active_queues.unsqueeze(0)
-        ).sum(dim=1)
-    else:
-        add_externality = torch.zeros_like(queues)
-        remove_externality = torch.zeros_like(queues)
-
-    join_marginals = queues * rates + add_externality
-    leave_marginals = -queues * rates + remove_externality
-    marginals = torch.where(active, leave_marginals, join_marginals)
-    return torch.where(
-        queues > 0,
-        marginals,
-        torch.full_like(marginals, -float("inf")),
+def build_conflict_neighbors(state):
+    """Return directed incoming and outgoing conflict neighbors."""
+    incoming = [set() for _ in range(int(state.num_vertices))]
+    outgoing = [set() for _ in range(int(state.num_vertices))]
+    source, target = state.edge_index.detach().cpu()
+    for sender, receiver in zip(source.tolist(), target.tolist()):
+        outgoing[sender].add(receiver)
+        incoming[receiver].add(sender)
+    return (
+        [tuple(sorted(neighbors)) for neighbors in incoming],
+        [tuple(sorted(neighbors)) for neighbors in outgoing],
     )
 
 
-class MarginalMPScheduler:
-    """Generic MarginalMP with a pluggable binary schedule initializer."""
+def build_coordination_neighborhoods(state):
+    """Return each link's closed incoming/outgoing conflict neighborhood."""
+    incoming, outgoing = build_conflict_neighbors(state)
+    return [
+        tuple(sorted({link, *incoming[link], *outgoing[link]}))
+        for link in range(int(state.num_vertices))
+    ]
 
-    model_version = "marginal_mp_v1"
+
+def build_coordination_memberships(coordination_neighborhoods):
+    """Flatten candidate-to-neighborhood membership for vectorized voting."""
+    sizes = torch.tensor([
+        len(neighborhood) for neighborhood in coordination_neighborhoods
+    ], dtype=torch.long)
+    candidates = torch.repeat_interleave(
+        torch.arange(len(coordination_neighborhoods)), sizes
+    )
+    members = torch.tensor([
+        member
+        for neighborhood in coordination_neighborhoods
+        for member in neighborhood
+    ], dtype=torch.long)
+    return candidates, members, sizes
+
+
+def compute_graph_local_rates(state, action):
+    """Compute rates using interference only on conflict-graph edges."""
+    active = torch.as_tensor(action, dtype=torch.float32).reshape(-1).cpu()
+    direct, source, target, edge_gain = local_edge_gains(state)
+
+    interference = torch.zeros_like(direct)
+    if source.numel() > 0:
+        interference.index_add_(0, target, edge_gain * active[source])
+
+    noise = float(state.noise_power)
+    gap = float(getattr(state, "snr_gap", 1.0))
+    return torch.log2(1.0 + direct / (noise + interference) / gap)
+
+
+def conflict_graph_utility(state, queues, action):
+    """Return U_G(A)=sum_i Q_i R_i^G(A) over active links."""
+    queues = torch.as_tensor(queues, dtype=torch.float32).reshape(-1).cpu()
+    active = torch.as_tensor(action, dtype=torch.float32).reshape(-1).cpu()
+    rates = compute_graph_local_rates(state, active)
+    return torch.sum(queues * active * rates)
+
+
+def conflict_graph_toggle_marginals(state, queues, action):
+    """Return the graph-local utility change from toggling every link.
+
+    The own-service term is combined with rate variations reported by active
+    outgoing conflict neighbors.  No non-conflict receiver contributes to the
+    result.
+    """
+    queues = torch.as_tensor(queues, dtype=torch.float32).reshape(-1).cpu()
+    active = torch.as_tensor(action, dtype=torch.bool).reshape(-1).cpu()
+    active_float = active.float()
+    direct, source, target, edge_gain = local_edge_gains(state)
+
+    interference = torch.zeros_like(direct)
+    if source.numel() > 0:
+        interference.index_add_(0, target, edge_gain * active_float[source])
+
+    noise = float(state.noise_power)
+    gap = float(getattr(state, "snr_gap", 1.0))
+    current_rates = torch.log2(1.0 + direct / (noise + interference) / gap)
+
+    own_service = torch.where(
+        active,
+        -queues * current_rates,
+        queues * current_rates,
+    )
+    neighbor_variation = torch.zeros_like(own_service)
+
+    if source.numel() > 0:
+        interference_after_toggle = torch.where(
+            active[source],
+            interference[target] - edge_gain,
+            interference[target] + edge_gain,
+        ).clamp_min(0.0)
+        rates_after_toggle = torch.log2(
+            1.0 + direct[target] / (noise + interference_after_toggle) / gap
+        )
+        edge_variation = (
+            active_float[target]
+            * queues[target]
+            * (rates_after_toggle - current_rates[target])
+        )
+        neighbor_variation.index_add_(0, source, edge_variation)
+
+    return own_service + neighbor_variation
+
+
+def confirm_disjoint_neighborhood_proposals(
+    marginals,
+    proposals,
+    coordination_neighborhoods,
+    coordination_memberships=None,
+):
+    """Confirm proposals chosen by every member of their neighborhood."""
+    marginals = torch.as_tensor(marginals, dtype=torch.float32).reshape(-1).cpu()
+    proposals = torch.as_tensor(proposals, dtype=torch.bool).reshape(-1).cpu()
+    if coordination_memberships is None:
+        coordination_memberships = build_coordination_memberships(
+            coordination_neighborhoods
+        )
+    candidates, members, neighborhood_sizes = coordination_memberships
+
+    active_memberships = proposals[candidates]
+    proposal_candidates = candidates[active_memberships]
+    proposal_members = members[active_memberships]
+    if proposal_candidates.numel() == 0:
+        return torch.zeros_like(proposals)
+
+    proposal_marginals = marginals[proposal_candidates]
+    best_margin = torch.full_like(marginals, -torch.inf)
+    best_margin.scatter_reduce_(
+        0, proposal_members, proposal_marginals,
+        reduce="amax", include_self=True,
+    )
+
+    has_best_margin = proposal_marginals == best_margin[proposal_members]
+    tied_members = proposal_members[has_best_margin]
+    tied_candidates = proposal_candidates[has_best_margin]
+
+    no_vote = len(coordination_neighborhoods)
+    member_votes = torch.full(
+        (no_vote,), no_vote, dtype=torch.long
+    )
+    member_votes.scatter_reduce_(
+        0, tied_members, tied_candidates,
+        reduce="amin", include_self=True,
+    )
+
+    vote_count = torch.bincount(
+        member_votes[member_votes < no_vote], minlength=no_vote
+    )
+    return proposals & (vote_count == neighborhood_sizes)
+
+
+def confirm_endpoint_join_proposals(state, marginals, proposals, action):
+    """Require both free endpoint UAVs to confirm a joining proposal."""
+    marginals = torch.as_tensor(marginals, dtype=torch.float32).reshape(-1).cpu()
+    proposals = torch.as_tensor(proposals, dtype=torch.bool).reshape(-1).cpu()
+    active = torch.as_tensor(action, dtype=torch.bool).reshape(-1).cpu()
+    links = state.links.detach().cpu()
+
+    occupied = set(links[active].reshape(-1).tolist())
+    joining = proposals & ~active
+    joining_indices = torch.nonzero(joining, as_tuple=True)[0].tolist()
+    joining_indices = [
+        link for link in joining_indices
+        if int(links[link, 0]) not in occupied
+        and int(links[link, 1]) not in occupied
+    ]
+
+    endpoint_vote = {}
+    for candidate in joining_indices:
+        for endpoint in links[candidate].tolist():
+            current = endpoint_vote.get(endpoint)
+            if current is None or (
+                float(marginals[candidate]), -candidate
+            ) > (
+                float(marginals[current]), -current
+            ):
+                endpoint_vote[endpoint] = candidate
+
+    confirmed = active & proposals
+    for candidate in joining_indices:
+        tx, rx = links[candidate].tolist()
+        confirmed[candidate] = (
+            endpoint_vote.get(tx) == candidate
+            and endpoint_vote.get(rx) == candidate
+        )
+    return confirmed
+
+
+def neighborhoods_are_disjoint(selected, coordination_neighborhoods):
+    """Return whether selected links have pairwise-disjoint neighborhoods."""
+    used = set()
+    for candidate in torch.nonzero(selected, as_tuple=True)[0].tolist():
+        neighborhood = set(coordination_neighborhoods[candidate])
+        if used.intersection(neighborhood):
+            return False
+        used.update(neighborhood)
+    return True
+
+
+class MarginalMPScheduler:
+    """Marginal coordination with a pluggable LocalMax initializer."""
+
+    model_version = MARGINAL_PROTOCOL_VERSION
     paper_name = PAPER_METHOD_NAME
     paper_acronym = PAPER_METHOD_ACRONYM
 
     def __init__(self, initializer, rounds=4, initializer_name=None):
-        if int(rounds) < 1:
-            raise ValueError("rounds must be positive")
-        if not hasattr(initializer, "schedule_with_state"):
-            raise TypeError("initializer must implement schedule_with_state")
         self.initializer = initializer
         self.rounds = int(rounds)
         self.initializer_name = str(
@@ -138,114 +248,153 @@ class MarginalMPScheduler:
             or getattr(initializer, "model_version", type(initializer).__name__)
         )
         self.last_diagnostics = {}
+        self._neighborhood_state = None
+        self._coordination_neighborhoods = None
+        self._coordination_memberships = None
 
     def eval(self):
         if hasattr(self.initializer, "eval"):
             self.initializer.eval()
         return self
 
+    def clear_cache(self):
+        if hasattr(self.initializer, "clear_cache"):
+            self.initializer.clear_cache()
+        self._neighborhood_state = None
+        self._coordination_neighborhoods = None
+        self._coordination_memberships = None
+
+    def _coordination_for(self, state):
+        """Build the fixed conflict-graph neighborhoods once per block."""
+        if state is not self._neighborhood_state:
+            self._coordination_neighborhoods = (
+                build_coordination_neighborhoods(state)
+            )
+            self._coordination_memberships = build_coordination_memberships(
+                self._coordination_neighborhoods
+            )
+            self._neighborhood_state = state
+        return (
+            self._coordination_neighborhoods,
+            self._coordination_memberships,
+        )
+
     def schedule_with_state(self, state, queues):
         action = self.initializer.schedule_with_state(
             state, queues
         ).reshape(-1).round().bool().cpu()
-        # The graph conflict set is not, by itself, a complete implementation
-        # of a single-radio/half-duplex assumption.  Enforce the matching
-        # constraint at initialization and after every parallel toggle.
-        initial_candidate = action.clone()
-        direct_priority = torch.as_tensor(
-            getattr(state, "vertex_features", torch.zeros((action.numel(), 1)))
-        ).reshape(action.numel(), -1)[:, 0].float().cpu()
-        action, initial_projection = project_shared_uav_feasible(
-            action.float(), state.links, priorities=direct_priority
-        )
-        action = action.reshape(-1).bool()
-        selected_per_round = []
+        neighborhoods, neighborhood_memberships = self._coordination_for(state)
+        neighborhood_sizes = neighborhood_memberships[2]
+
+        initial_audit = shared_uav_action_audit(action, state.links)
+        if not initial_audit["feasible"]:
+            raise RuntimeError("MarginalMP initializer must return a feasible action")
+
+        utility_per_round = [
+            float(conflict_graph_utility(state, queues, action))
+        ]
         positive_per_round = []
+        accepted_per_round = []
+        accepted_indices_per_round = []
+        accepted_joins_per_round = []
+        accepted_leaves_per_round = []
+        disjoint_per_round = []
         active_per_round = [int(action.sum())]
-        physical_externality_pairs = []
-        direct_service_reports = []
-        arbitration_directed_edge_messages = []
-        rejected_per_round = [initial_projection["rejected_project_link_indices"]]
+        rate_variation_messages = []
+        proposal_messages = []
+        confirmation_messages = []
+        endpoint_confirmations = []
+
         source, target = state.edge_index.detach().cpu()
         for _ in range(self.rounds):
-            active_count = int(action.sum())
-            num_links = int(action.numel())
-            # Deployment-accounting proxy for the exact marginal formula:
-            # every candidate needs one own-rate report and an externality
-            # contribution from every other currently active receiver.  CSI
-            # acquisition itself is accounted separately by the experiment.
-            physical_externality_pairs.append(
-                active_count * max(num_links - 1, 0)
+            marginals = conflict_graph_toggle_marginals(
+                state, queues, action
             )
-            direct_service_reports.append(num_links)
-            marginals = exact_link_toggle_marginals(state, queues, action)
-            valid = torch.isfinite(marginals) & (marginals > 1e-6)
-            arbitration_directed_edge_messages.append(int(
-                (valid[source] & valid[target]).sum()
+            proposals = torch.isfinite(marginals) & (marginals > 1e-6)
+
+            neighborhood_ok = confirm_disjoint_neighborhood_proposals(
+                marginals,
+                proposals,
+                neighborhoods,
+                neighborhood_memberships,
+            )
+            endpoint_ok = confirm_endpoint_join_proposals(
+                state, marginals, proposals, action
+            )
+            confirmed = neighborhood_ok & endpoint_ok
+
+            positive_per_round.append(int(proposals.sum()))
+            accepted_per_round.append(int(confirmed.sum()))
+            accepted_indices_per_round.append(
+                torch.nonzero(confirmed, as_tuple=True)[0].tolist()
+            )
+            accepted_joins_per_round.append(int((confirmed & ~action).sum()))
+            accepted_leaves_per_round.append(int((confirmed & action).sum()))
+            disjoint_per_round.append(
+                neighborhoods_are_disjoint(confirmed, neighborhoods)
+            )
+            proposal_messages.append(int(neighborhood_sizes[proposals].sum()))
+            confirmation_messages.append(int(
+                neighborhood_sizes[neighborhood_ok].sum()
+            ))
+            endpoint_confirmations.append(int((confirmed & ~action).sum()) * 2)
+            rate_variation_messages.append(int(
+                (action[target] & proposals[source]).sum()
                 if source.numel() > 0 else 0
             ))
-            selected = select_local_positive_maxima(
-                marginals, valid, state.edge_index
-            )
-            positive_per_round.append(int(valid.sum()))
-            selected_per_round.append(int(selected.sum()))
-            if not selected.any():
+
+            if not confirmed.any():
                 break
-            candidate = torch.logical_xor(action, selected.cpu())
-            # Keep incumbent links ahead of newly proposed links; among new
-            # links, the exact marginal is the deterministic tie-break score.
-            priority = torch.where(
-                candidate,
-                torch.where(
-                    action,
-                    torch.full_like(marginals, 1e6),
-                    torch.nan_to_num(marginals, nan=-1e6, neginf=-1e6),
-                ),
-                torch.zeros_like(marginals),
+
+            action = torch.logical_xor(action, confirmed)
+            round_audit = shared_uav_action_audit(action, state.links)
+            if not round_audit["feasible"]:
+                raise RuntimeError("MarginalMP endpoint confirmation failed")
+
+            utility_per_round.append(
+                float(conflict_graph_utility(state, queues, action))
             )
-            action, projection = project_shared_uav_feasible(
-                candidate.float(), state.links, priorities=priority
-            )
-            action = action.reshape(-1).bool()
-            rejected_per_round.append(projection["rejected_project_link_indices"])
             active_per_round.append(int(action.sum()))
-        final_audit = shared_uav_action_audit(action, state.links)
-        if not final_audit["feasible"]:
-            raise RuntimeError("MarginalMP returned an infeasible shared-UAV action")
+
         self.last_diagnostics = {
             "method": self.paper_acronym,
+            "protocol_version": MARGINAL_PROTOCOL_VERSION,
             "initializer": self.initializer_name,
             "configured_rounds": self.rounds,
-            "executed_rounds": len(selected_per_round),
+            "executed_rounds": len(accepted_per_round),
+            "coordination_neighborhood_sizes": [
+                int(size) for size in neighborhood_sizes
+            ],
             "positive_proposals_per_round": positive_per_round,
-            "selected_toggles_per_round": selected_per_round,
+            "accepted_toggles_per_round": accepted_per_round,
+            "accepted_link_indices_per_round": accepted_indices_per_round,
+            "accepted_joins_per_round": accepted_joins_per_round,
+            "accepted_leaves_per_round": accepted_leaves_per_round,
+            "accepted_neighborhoods_disjoint_per_round": disjoint_per_round,
             "active_links_per_round": active_per_round,
-            "final_active_links": int(action.sum()),
-            "logical_neighbor_exchange_rounds": 1 + 2 * len(selected_per_round),
-            "round_accounting_definition": (
-                "one LocalMax score exchange plus, per MarginalMP iteration, "
-                "one physical-marginal feedback phase and one proposal "
-                "arbitration phase; CSI acquisition is excluded"
+            "conflict_graph_utility_per_round": utility_per_round,
+            "conflict_graph_utility_delta_per_round": [
+                after - before
+                for before, after in zip(
+                    utility_per_round, utility_per_round[1:]
+                )
+            ],
+            "rate_variation_messages_per_round": rate_variation_messages,
+            "proposal_messages_per_round": proposal_messages,
+            "confirmation_messages_per_round": confirmation_messages,
+            "endpoint_confirmations_per_round": endpoint_confirmations,
+            "hard_feasibility_initial": initial_audit,
+            "hard_feasibility_final": shared_uav_action_audit(
+                action, state.links
             ),
-            "physical_externality_pairs_per_round": physical_externality_pairs,
-            "direct_service_reports_per_round": direct_service_reports,
-            "arbitration_directed_edge_messages_per_round": (
-                arbitration_directed_edge_messages
-            ),
-            "shared_uav_constraint": "single_radio_half_duplex_matching",
-            "hard_feasibility_initial_candidate": shared_uav_action_audit(
-                initial_candidate, state.links
-            ),
-            "hard_feasibility_projection_rejected_per_round": rejected_per_round,
-            "hard_feasibility_final": final_audit,
         }
         return action.float().unsqueeze(1)
 
 
 class DirectLinkMarginalMP(MarginalMPScheduler):
-    """Mandatory no-GAT ablation: Direct-Link LocalMax plus MarginalMP."""
+    """Direct-link LocalMax followed by graph-local marginal coordination."""
 
-    model_version = "direct_link_marginal_mp_v2_no_join"
+    model_version = "direct_mp_local_coordination_v1"
     paper_variant_name = DIRECT_LINK_METHOD_NAME
 
     def __init__(self, rounds=4):
@@ -257,9 +406,9 @@ class DirectLinkMarginalMP(MarginalMPScheduler):
 
 
 class GATAssistedMarginalMP(MarginalMPScheduler):
-    """Paper-main GAT-Assisted LocalMax plus unchanged MarginalMP rounds."""
+    """GAT prior plus graph-local marginal coordination."""
 
-    model_version = "gat_assisted_marginal_mp_v2_no_join"
+    model_version = "gat_mp_local_coordination_v1"
     paper_variant_name = GAT_ASSISTED_METHOD_NAME
 
     def __init__(self, channel_model, rounds=4):
@@ -275,7 +424,16 @@ __all__ = [
     "PAPER_METHOD_ACRONYM",
     "DIRECT_LINK_METHOD_NAME",
     "GAT_ASSISTED_METHOD_NAME",
-    "exact_link_toggle_marginals",
+    "MARGINAL_PROTOCOL_VERSION",
+    "build_conflict_neighbors",
+    "build_coordination_neighborhoods",
+    "build_coordination_memberships",
+    "compute_graph_local_rates",
+    "conflict_graph_utility",
+    "conflict_graph_toggle_marginals",
+    "confirm_disjoint_neighborhood_proposals",
+    "confirm_endpoint_join_proposals",
+    "neighborhoods_are_disjoint",
     "MarginalMPScheduler",
     "DirectLinkMarginalMP",
     "GATAssistedMarginalMP",

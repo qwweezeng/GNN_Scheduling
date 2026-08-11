@@ -8,6 +8,7 @@ from models.local_physical_reuse import (
     ChannelGATHardActionSkeleton,
     GATExpectedRateLocalPhysicalReuseScheduler,
     LocalPhysicalReuseScheduler,
+    QueueChannelLocalMaxScheduler,
     conflict_graph_local_join_margins,
     select_local_positive_maxima,
 )
@@ -54,9 +55,11 @@ class FixedChannelGAT(nn.Module):
     def __init__(self):
         super().__init__()
         self.anchor = nn.Parameter(torch.zeros(()))
+        self.forward_calls = 0
 
     def schedule_logits(self, x, edge_index, edge_attr):
         del edge_index, edge_attr
+        self.forward_calls += 1
         logits = torch.linspace(-0.5, 0.5, x.size(0)).unsqueeze(1)
         return logits, torch.zeros(x.size(0), 2)
 
@@ -111,6 +114,29 @@ class LocalPhysicalReuseTest(unittest.TestCase):
             state, torch.tensor([1.0, 1.0])
         ).reshape(-1)
         self.assertTrue(torch.equal(action, torch.tensor([0.0, 1.0])))
+
+    def test_gat_rate_prior_is_cached_per_block_but_queues_update_per_slot(self):
+        state = two_link_state()
+        state.vertex_features = torch.tensor([[9.0], [7.0]])
+        model = FixedChannelGAT()
+        scheduler = QueueChannelLocalMaxScheduler(model)
+
+        first = scheduler.schedule_with_state(
+            state, torch.tensor([100.0, 1.0])
+        ).reshape(-1)
+        second = scheduler.schedule_with_state(
+            state, torch.tensor([1.0, 100.0])
+        ).reshape(-1)
+
+        self.assertEqual(model.forward_calls, 1)
+        self.assertTrue(torch.equal(first, torch.tensor([1.0, 0.0])))
+        self.assertTrue(torch.equal(second, torch.tensor([0.0, 1.0])))
+
+        next_block = two_link_state()
+        next_block.vertex_features = torch.tensor([[9.0], [7.0]])
+        scheduler.clear_cache()
+        scheduler.schedule_with_state(next_block, torch.ones(2))
+        self.assertEqual(model.forward_calls, 2)
 
 
 if __name__ == "__main__":
