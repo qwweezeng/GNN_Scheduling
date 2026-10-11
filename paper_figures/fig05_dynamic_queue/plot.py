@@ -134,6 +134,15 @@ def main() -> None:
         help="Optional result root created by run.py --output-root.",
     )
     p.add_argument(
+        "--output-root",
+        default="",
+        help=(
+            "Optional root for generated figures and plotting CSV. "
+            "Outputs go to <root>/figures and <root>/data/plotting; "
+            "the historical paper_figures directory is used only when omitted."
+        ),
+    )
+    p.add_argument(
         "--metrics", default=",".join(METRICS),
         help="Comma-separated panel names; defaults to all standard panels.",
     )
@@ -141,6 +150,9 @@ def main() -> None:
     raw_root = Path(args.raw_root) if args.raw_root else HERE / "data/raw"
     if not raw_root.is_absolute():
         raw_root = ROOT / raw_root
+    output_root = Path(args.output_root) if args.output_root else HERE
+    if not output_root.is_absolute():
+        output_root = ROOT / output_root
     raw = raw_root / args.profile
     selected_metrics = tuple(x.strip() for x in args.metrics.split(",") if x.strip())
     unknown_metrics = set(selected_metrics) - set(METRICS)
@@ -154,9 +166,12 @@ def main() -> None:
             suffix = "_completed_only" if metric == "completed_delay" else ""
             draw(
                 rows, n, metric,
-                HERE / "figures" / f"fig05_{output_metric}_N{n}_{args.profile}{suffix}.eps",
+                output_root / "figures" / f"fig05_{output_metric}_N{n}_{args.profile}{suffix}.eps",
             )
-    save_csv(all_rows, HERE / "data/plotting" / f"fig05_{args.profile}_summary.csv")
+    save_csv(
+        all_rows,
+        output_root / "data/plotting" / f"fig05_{args.profile}_summary.csv",
+    )
 
 
 if __name__ == "__main__":

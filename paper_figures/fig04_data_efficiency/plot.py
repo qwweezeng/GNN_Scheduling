@@ -76,8 +76,9 @@ def _plot_metric(
     metric: str,
     ylabel: str,
     filename_stem: str,
+    output_root: Path,
 ) -> None:
-    figure_dir = HERE / "figures"
+    figure_dir = output_root / "figures"
     figure_dir.mkdir(parents=True, exist_ok=True)
     with paper_style():
         mpl.rcParams.update({
@@ -121,8 +122,10 @@ def _plot_metric(
         plt.close(fig)
 
 
-def _plot_best_validation(rows: list[dict[str, Any]], nodes: list[int]) -> None:
-    figure_dir = HERE / "figures"
+def _plot_best_validation(
+    rows: list[dict[str, Any]], nodes: list[int], output_root: Path
+) -> None:
+    figure_dir = output_root / "figures"
     figure_dir.mkdir(parents=True, exist_ok=True)
     with paper_style():
         mpl.rcParams.update({
@@ -166,6 +169,8 @@ def main() -> None:
     parser.add_argument("--nodes", default="20,30,40,50")
     parser.add_argument("--sizes", default=",".join(str(size) for size in SIZES))
     parser.add_argument("--seeds", default="0,1,2")
+    parser.add_argument("--raw-root", type=Path, default=HERE / "data/raw")
+    parser.add_argument("--output-root", type=Path, default=HERE)
     args = parser.parse_args()
 
     nodes = [int(value) for value in args.nodes.split(",") if value]
@@ -178,7 +183,7 @@ def main() -> None:
         for train_size in sizes:
             for model_seed in seeds:
                 artifact_dir = (
-                    HERE / "data/raw" / f"N{num_uav}" / f"n{train_size}" / f"seed{model_seed}"
+                    args.raw_root / f"N{num_uav}" / f"n{train_size}" / f"seed{model_seed}"
                 )
                 training = _load_json(artifact_dir / "training.json")
                 validation_rows.append({
@@ -253,7 +258,7 @@ def main() -> None:
         for (num_uav, train_size), values in sorted(validation_grouped.items())
     ]
 
-    data_dir = HERE / "data/plotting"
+    data_dir = args.output_root / "data/plotting"
     data_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(data_dir / "fig04_checkpoint_metric_seed_values.csv", seed_rows)
     _write_csv(data_dir / "fig04_checkpoint_metric_summary.csv", summary_rows)
@@ -269,8 +274,9 @@ def main() -> None:
                 metric,
                 ylabel,
                 f"fig04_{selection}_{metric}",
+                args.output_root,
             )
-    _plot_best_validation(validation_summary_rows, nodes)
+    _plot_best_validation(validation_summary_rows, nodes, args.output_root)
 
 
 if __name__ == "__main__":

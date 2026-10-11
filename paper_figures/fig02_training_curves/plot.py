@@ -32,11 +32,11 @@ MARKER_EVERY = 3
 BANDWIDTH_MHZ = 5.0
 
 
-def load(nodes, seeds):
+def load(nodes, seeds, raw_root):
     rows = []
     for n in nodes:
         for s in seeds:
-            report = HERE / 'data/raw' / f'N{n}' / f'seed{s}' / 'training.json'
+            report = raw_root / f'N{n}' / f'seed{s}' / 'training.json'
             for log in json.loads(report.read_text())['per_epoch_logs']:
                 missing = [
                     key for key in ('val_soft_utility', 'val_projected_utility')
@@ -118,22 +118,25 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--nodes', default='20,30,40,50')
     parser.add_argument('--seeds', default='0,1,2')
+    parser.add_argument('--raw-root', type=Path, default=HERE / 'data/raw')
+    parser.add_argument('--output-root', type=Path, default=HERE)
     args = parser.parse_args()
     nodes = [int(x) for x in args.nodes.split(',') if x]
     seeds = [int(x) for x in args.seeds.split(',') if x]
-    rows = summarize(load(nodes, seeds))
+    rows = summarize(load(nodes, seeds, args.raw_root))
 
-    plotting_dir = HERE / 'data/plotting'
+    plotting_dir = args.output_root / 'data/plotting'
     plotting_dir.mkdir(parents=True, exist_ok=True)
     with (plotting_dir / 'fig02_epoch_summary.csv').open('w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=rows[0])
         writer.writeheader()
         writer.writerows(rows)
 
-    draw(rows, nodes, 'training_loss', 'Training loss (bit/s/Hz)', HERE / 'figures/fig02_training_loss.eps')
-    draw(rows, nodes, 'validation_binary_rate_mbps', 'Validation hard rate (Mbps)', HERE / 'figures/fig02_validation_binary_rate.eps')
-    draw(rows, nodes, 'validation_soft_rate_mbps', 'Soft validation rate (Mbps)', HERE / 'figures/fig02_validation_soft_rate.eps')
-    draw(rows, nodes, 'validation_projected_rate_mbps', 'Projected hard validation rate (Mbps)', HERE / 'figures/fig02_validation_projected_rate.eps')
+    figure_dir = args.output_root / 'figures'
+    draw(rows, nodes, 'training_loss', 'Training loss (bit/s/Hz)', figure_dir / 'fig02_training_loss.eps')
+    draw(rows, nodes, 'validation_binary_rate_mbps', 'Validation hard rate (Mbps)', figure_dir / 'fig02_validation_binary_rate.eps')
+    draw(rows, nodes, 'validation_soft_rate_mbps', 'Soft validation rate (Mbps)', figure_dir / 'fig02_validation_soft_rate.eps')
+    draw(rows, nodes, 'validation_projected_rate_mbps', 'Projected hard validation rate (Mbps)', figure_dir / 'fig02_validation_projected_rate.eps')
 
 
 if __name__ == '__main__':

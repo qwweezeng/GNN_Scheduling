@@ -33,6 +33,12 @@ def main() -> None:
     parser.add_argument("--nodes", default="20,30,40,50")
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument(
+        "--stage",
+        choices=("train", "evaluate", "all"),
+        default="all",
+        help="train=checkpoint/log only; evaluate=existing checkpoints only; all=both.",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--gpu-id", type=int, default=0)
@@ -58,31 +64,36 @@ def main() -> None:
                 and not args.force
             ):
                 print(f"reuse {training_json}", flush=True)
-                _evaluate("best", best_checkpoint, artifact_dir, num_uav, args)
-                _evaluate("final", final_checkpoint, artifact_dir, num_uav, args)
-                continue
+            else:
+                if args.stage == "evaluate":
+                    raise FileNotFoundError(
+                        "Fig. 2 evaluation requires training.json and both "
+                        f"checkpoints for N={num_uav}, seed={model_seed}."
+                    )
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                checkpoint_dir.mkdir(parents=True, exist_ok=True)
+                cmd = [
+                    sys.executable, "-u",
+                    "train/train_channel_gat_rician.py",
+                    "--num_uav", str(num_uav),
+                    "--train_size", "300",
+                    "--val_size", "128",
+                    "--test_size", "128",
+                    "--epochs", str(args.epochs),
+                    "--seed", "10086",
+                    "--val_seed", "10087",
+                    "--test_seed", "10088",
+                    "--model-seed", str(model_seed),
+                    "--checkpoint_out", str(best_checkpoint),
+                    "--final-checkpoint_out", str(final_checkpoint),
+                    "--report_out", str(training_json),
+                    "--device", args.device,
+                    "--gpu-id", str(args.gpu_id),
+                ]
+                call(cmd)
 
-            artifact_dir.mkdir(parents=True, exist_ok=True)
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            cmd = [
-                sys.executable, "-u",
-                "train/train_channel_gat_rician.py",
-                "--num_uav", str(num_uav),
-                "--train_size", "300",
-                "--val_size", "128",
-                "--test_size", "128",
-                "--epochs", str(args.epochs),
-                "--seed", "10086",
-                "--val_seed", "10087",
-                "--test_seed", "10088",
-                "--model-seed", str(model_seed),
-                "--checkpoint_out", str(best_checkpoint),
-                "--final-checkpoint_out", str(final_checkpoint),
-                "--report_out", str(training_json),
-                "--device", args.device,
-                "--gpu-id", str(args.gpu_id),
-            ]
-            call(cmd)
+            if args.stage == "train":
+                continue
 
             # Evaluate both checkpoints on canonical test set
             _evaluate("best", best_checkpoint, artifact_dir, num_uav, args)

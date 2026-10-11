@@ -27,6 +27,29 @@ def metadata_fingerprint(metadata: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical_json(metadata).encode("utf-8")).hexdigest()
 
 
+def dataset_split_fingerprint(metadata: Mapping[str, Any], split: str) -> str:
+    """Return one split's identity without coupling it to unrelated splits."""
+    if split not in metadata.get("split_seeds", {}):
+        raise KeyError(f"Unknown dataset split: {split}")
+    semantic = {
+        "schema": metadata["schema"],
+        "physics": metadata["physics"],
+        "split": str(split),
+        "seed": int(metadata["split_seeds"][split]),
+        "size": int(metadata["split_sizes"][split]),
+    }
+    return metadata_fingerprint(semantic)
+
+
+def _with_split_fingerprints(semantic: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = {**semantic, "fingerprint": metadata_fingerprint(semantic)}
+    metadata["split_fingerprints"] = {
+        split: dataset_split_fingerprint(metadata, split)
+        for split in metadata["split_sizes"]
+    }
+    return metadata
+
+
 def paper_physics_metadata(config: Mapping[str, Any], num_uav: int) -> dict[str, Any]:
     """Return the physical fields that define channel-dataset semantics."""
     return {
@@ -91,9 +114,13 @@ def paper_dataset_paths_quantized(
     sizes: Mapping[str, int],
     csi_mode: str,
     q_bits: int | None = None,
+    catalog_policy: str | None = None,
 ):
     subdir = _csi_subdirectory(csi_mode, q_bits)
-    directory = root / "rician_K5_tx10" / subdir / f"N{int(num_uav)}"
+    directory = root / "rician_K5_tx10"
+    if catalog_policy is not None:
+        directory = directory / f"catalog_{catalog_policy}"
+    directory = directory / subdir / f"N{int(num_uav)}"
     train_val = directory / (
         f"train_seed{int(seeds['train'])}_n{int(sizes['train'])}__"
         f"val_seed{int(seeds['val'])}_n{int(sizes['val'])}.pkl"
@@ -109,15 +136,18 @@ def expected_dataset_metadata_quantized(
     split_sizes: Mapping[str, int],
     csi_mode: str,
     q_bits: int | None = None,
+    catalog_policy: str | None = None,
 ) -> dict[str, Any]:
     physics = paper_physics_metadata_quantized(config, num_uav, csi_mode, q_bits)
+    if catalog_policy is not None:
+        physics["catalog_policy"] = str(catalog_policy)
     semantic = {
         "schema": DATASET_SCHEMA,
         "physics": physics,
         "split_seeds": {key: int(value) for key, value in split_seeds.items()},
         "split_sizes": {key: int(value) for key, value in split_sizes.items()},
     }
-    return {**semantic, "fingerprint": metadata_fingerprint(semantic)}
+    return _with_split_fingerprints(semantic)
 
 
 def expected_dataset_metadata(
@@ -133,7 +163,7 @@ def expected_dataset_metadata(
         "split_seeds": {key: int(value) for key, value in split_seeds.items()},
         "split_sizes": {key: int(value) for key, value in split_sizes.items()},
     }
-    return {**semantic, "fingerprint": metadata_fingerprint(semantic)}
+    return _with_split_fingerprints(semantic)
 
 
 def validate_dataset_payload(
@@ -142,10 +172,34 @@ def validate_dataset_payload(
     """Return mismatch descriptions; an empty list means the cache is valid."""
     errors: list[str] = []
     metadata = payload.get("metadata", {})
-    for key in ("schema", "physics", "split_seeds", "split_sizes", "fingerprint"):
+    for key in ("schema", "physics"):
         if metadata.get(key) != expected.get(key):
             errors.append(f"metadata.{key} mismatch")
     for split in required_splits:
+        if metadata.get("split_seeds", {}).get(split) != expected.get(
+            "split_seeds", {}
+        ).get(split):
+            errors.append(f"metadata.split_seeds.{split} mismatch")
+        if metadata.get("split_sizes", {}).get(split) != expected.get(
+            "split_sizes", {}
+        ).get(split):
+            errors.append(f"metadata.split_sizes.{split} mismatch")
+        try:
+            actual_split_fingerprint = dataset_split_fingerprint(metadata, split)
+            expected_split_fingerprint = dataset_split_fingerprint(expected, split)
+        except (KeyError, TypeError, ValueError):
+            errors.append(f"metadata split identity for {split} is incomplete")
+        else:
+            recorded_split_fingerprint = metadata.get(
+                "split_fingerprints", {}
+            ).get(split)
+            if (
+                recorded_split_fingerprint is not None
+                and recorded_split_fingerprint != actual_split_fingerprint
+            ):
+                errors.append(f"metadata.split_fingerprints.{split} mismatch")
+            if actual_split_fingerprint != expected_split_fingerprint:
+                errors.append(f"metadata {split} fingerprint mismatch")
         key = f"{split}_set"
         if key not in payload:
             errors.append(f"missing {key}")
@@ -204,6 +258,7 @@ def write_dataset_manifest(
 __all__ = [
     "DATASET_SCHEMA",
     "atomic_pickle_dump",
+    "dataset_split_fingerprint",
     "expected_dataset_metadata",
     "expected_dataset_metadata_quantized",
     "load_validated_dataset",
@@ -214,4 +269,3 @@ __all__ = [
     "validate_dataset_payload",
     "write_dataset_manifest",
 ]
-

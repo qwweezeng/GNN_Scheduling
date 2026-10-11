@@ -96,12 +96,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--nodes", default="20,30,40,50")
     parser.add_argument("--raw-dir", default=str(HERE / "data/raw"))
-    parser.add_argument("--output", default=str(HERE / "figures/fig01_total_rate.eps"))
+    parser.add_argument(
+        "--output-root",
+        default=str(HERE),
+        help="Root containing figures/ and data/plotting/ for this rendering.",
+    )
+    parser.add_argument(
+        "--output",
+        default="",
+        help="Optional EPS path. Defaults to <output-root>/figures/fig01_total_rate.eps.",
+    )
     args = parser.parse_args()
     nodes = [int(item) for item in args.nodes.split(",") if item.strip()]
-    rows = _load(nodes, Path(args.raw_dir))
-    _write_csv(rows, HERE / "data/plotting/fig01_total_rate.csv")
-    render(rows, Path(args.output))
+    raw_dir = Path(args.raw_dir)
+    output_root = Path(args.output_root)
+    output = Path(args.output) if args.output else output_root / "figures/fig01_total_rate.eps"
+    rows = _load(nodes, raw_dir)
+    _write_csv(rows, output_root / "data/plotting/fig01_total_rate.csv")
+    render(rows, output)
 
 
 if __name__ == "__main__":

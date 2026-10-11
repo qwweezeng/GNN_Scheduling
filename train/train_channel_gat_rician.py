@@ -78,6 +78,10 @@ def parse_args():
         "--report_out", default="",
         help="Optional JSON report path; defaults to the production report path.",
     )
+    parser.add_argument(
+        "--log-dir", default="logs/channel_gat_rician",
+        help="Training log directory; catalog pilots should use an isolated path.",
+    )
     parser.add_argument("--force_regenerate", action="store_true")
     parser.add_argument(
         "--device", default="auto", choices=("auto", "cpu", "cuda"),
@@ -107,6 +111,19 @@ def parse_args():
             "Number of quantization bits; required when --csi-mode is 'quantized'."
         ),
     )
+    parser.add_argument(
+        "--catalog-policy",
+        default="condition_specific",
+        choices=("condition_specific", "instantaneous", "mean_power"),
+        help=(
+            "Candidate-link rule. The default preserves existing paper data; "
+            "explicit alternatives are intended for isolated catalog pilots."
+        ),
+    )
+    parser.add_argument(
+        "--prepare-only", action="store_true",
+        help="Generate or validate the requested dataset, then stop before training.",
+    )
     return parser.parse_args()
 
 
@@ -120,11 +137,17 @@ def _load_or_generate(config, args, csi_mode, q_bits):
         "val": args.val_size,
         "test": args.test_size,
     }
+    explicit_catalog = (
+        None if args.catalog_policy == "condition_specific"
+        else args.catalog_policy
+    )
     metadata = expected_dataset_metadata_quantized(
-        config, args.num_uav, seeds, sizes, csi_mode, q_bits
+        config, args.num_uav, seeds, sizes, csi_mode, q_bits,
+        catalog_policy=explicit_catalog,
     )
     train_val_path, test_path = paper_dataset_paths_quantized(
-        Path(args.dataset_root), args.num_uav, seeds, sizes, csi_mode, q_bits
+        Path(args.dataset_root), args.num_uav, seeds, sizes, csi_mode, q_bits,
+        catalog_policy=explicit_catalog,
     )
     if train_val_path.exists() and test_path.exists() and not args.force_regenerate:
         train_val = load_validated_dataset(
@@ -143,6 +166,7 @@ def _load_or_generate(config, args, csi_mode, q_bits):
     train_set = generate_dataset(
         pool_size, generator, include_queue_feature=False,
         csi_mode=csi_mode, q_bits=q_bits,
+        catalog_policy=args.catalog_policy,
     )
     random.seed(args.val_seed)
     np.random.seed(args.val_seed)
@@ -150,6 +174,7 @@ def _load_or_generate(config, args, csi_mode, q_bits):
     val_set = generate_dataset(
         args.val_size, generator, include_queue_feature=False,
         csi_mode=csi_mode, q_bits=q_bits,
+        catalog_policy=args.catalog_policy,
     )
     random.seed(args.test_seed)
     np.random.seed(args.test_seed)
@@ -157,6 +182,7 @@ def _load_or_generate(config, args, csi_mode, q_bits):
     test_set = generate_dataset(
         args.test_size, generator, include_queue_feature=False,
         csi_mode=csi_mode, q_bits=q_bits,
+        catalog_policy=args.catalog_policy,
     )
     atomic_pickle_dump(
         {"metadata": metadata, "train_set": train_set, "val_set": val_set},
@@ -264,7 +290,29 @@ def main():
         },
         csi_mode,
         q_bits,
+        catalog_policy=(
+            None if args.catalog_policy == "condition_specific"
+            else args.catalog_policy
+        ),
     )
+    if args.prepare_only:
+        summary = {
+            "catalog_policy": args.catalog_policy,
+            "dataset_path": str(dataset_path),
+            "dataset_fingerprint": dataset_metadata["fingerprint"],
+            "split_sizes": {
+                "train": len(train_set),
+                "val": len(val_set),
+                "test": len(test_set),
+            },
+            "mean_links": {
+                "train": float(np.mean([state.links.size(0) for state in train_set])),
+                "val": float(np.mean([state.links.size(0) for state in val_set])),
+                "test": float(np.mean([state.links.size(0) for state in test_set])),
+            },
+        }
+        print(json.dumps(summary, indent=2), flush=True)
+        return
     model_seed = args.seed if args.model_seed is None else args.model_seed
     random.seed(model_seed)
     np.random.seed(model_seed)
@@ -283,7 +331,7 @@ def main():
     print(f"[train] device={device}", flush=True)
     trainer = Trainer(
         model, optimizer, device=device, gpu_id=args.gpu_id, use_queue=False,
-        log_dir="logs/channel_gat_rician",
+        log_dir=args.log_dir,
     )
     trained = trainer.train(
         num_epochs=args.epochs,
@@ -311,6 +359,7 @@ def main():
         "tx_power_dbm": float(config.get("TX_POWER", 10.0)),
         "csi_mode": csi_mode,
         "quantization_bits": q_bits,
+        "catalog_policy": args.catalog_policy,
         "channel_model": "rician",
         "rician_k_db": float(args.rician_k_db),
         "num_uav": int(args.num_uav),
@@ -323,6 +372,7 @@ def main():
             "RICIAN_K_DB": float(args.rician_k_db),
             "CSI_MODE": csi_mode,
             "Q_BITS": q_bits,
+            "CATALOG_POLICY": args.catalog_policy,
             "TRAIN_SIZE": int(args.train_size),
             "TRAIN_POOL_SIZE": pool_size,
             "VAL_SIZE": int(args.val_size),

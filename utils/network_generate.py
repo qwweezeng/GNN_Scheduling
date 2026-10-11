@@ -196,7 +196,8 @@ class NetworkGenerator:
     # queue_mode: "random" | "poisson"
     def generate_network(self, csi_mode="perfect", q_bits=8, queue_mode="random",
                         queue_states=None, include_queue_feature=False,
-                        queue_range=(0, 25), poisson_lambda=None):
+                        queue_range=(0, 25), poisson_lambda=None,
+                        catalog_policy="condition_specific"):
         positions = self._init_positions()
         external_queue_states = queue_states
         self.include_queue_feature = include_queue_feature
@@ -209,11 +210,26 @@ class NetworkGenerator:
         large_scale_power.fill_diagonal_(0.0)
         snr_large_scale = large_scale_power / self.noise_power
 
-        # 链路存在性判定
-        if csi_mode in ("large_scale", "quantized"):
+        # Candidate-link identity and observed CSI are separate choices.
+        # The default preserves all existing paper datasets:
+        # perfect snapshots use instantaneous SNR, while large-scale and
+        # quantized snapshots use mean SNR.  The two explicit policies are
+        # used only by the isolated catalog pilot.
+        if catalog_policy == "mean_power":
             valid_links = snr_large_scale >= snr_thres_beta
-        else:
+        elif catalog_policy == "instantaneous":
             valid_links = snr >= snr_thres_beta
+        elif catalog_policy == "condition_specific":
+            valid_links = (
+                snr_large_scale >= snr_thres_beta
+                if csi_mode in ("large_scale", "quantized")
+                else snr >= snr_thres_beta
+            )
+        else:
+            raise ValueError(
+                "catalog_policy must be condition_specific, instantaneous, "
+                f"or mean_power; got {catalog_policy!r}"
+            )
 
         src, dst = torch.where(valid_links)
         num_links = src.size(0)
@@ -379,6 +395,7 @@ class NetworkGenerator:
             tx_power=self.tx_power,
             carrier_f=self.carrier_f,
             csi_mode=csi_mode,
+            catalog_policy=catalog_policy,
             queue_states=link_queue_states,
             include_queue_feature=include_queue_feature,
         )
@@ -654,11 +671,12 @@ class NetworkState:
                  'signal_power', 'signal_power_large_scale', 'signal_power_quant',
                  'noise_power', 'bandwidth', 'snr_gap', 'neighbor_map',
                  'positions', 'num_vertices', 'tx_power', 'carrier_f', 'csi_mode',
-                 'queue_states', 'include_queue_feature']
+                 'catalog_policy', 'queue_states', 'include_queue_feature']
     def __init__(self, links, vertex_features, edge_index, edge_weights,
                  large_scale, signal_power, signal_power_large_scale, signal_power_quant,
                  noise_power, bandwidth, snr_gap,
                  neighbor_map, positions, tx_power=None, carrier_f=None, csi_mode="perfect",
+                 catalog_policy="condition_specific",
                  queue_states=None, include_queue_feature=False):
         self.links = links
         self.vertex_features = vertex_features
@@ -677,6 +695,7 @@ class NetworkState:
         self.tx_power = tx_power
         self.carrier_f = carrier_f
         self.csi_mode = csi_mode
+        self.catalog_policy = catalog_policy
         self.queue_states = queue_states
         self.include_queue_feature = include_queue_feature
 

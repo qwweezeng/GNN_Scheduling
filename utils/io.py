@@ -152,7 +152,8 @@ def save_experiment_results(trained_model, train_set, test_util, params,
 
 def generate_dataset(num_samples, simulator, batch_size=100, csi_mode="perfect", q_bits=8,
                     include_queue_feature=True,
-                    queue_mode="random", queue_range=(0, 25), poisson_lambda=None):
+                    queue_mode="random", queue_range=(0, 25), poisson_lambda=None,
+                    catalog_policy="condition_specific"):
     """
     Generate dataset in batches to avoid memory overflow.
     Used by ExperimentRunner.
@@ -185,6 +186,7 @@ def generate_dataset(num_samples, simulator, batch_size=100, csi_mode="perfect",
                 queue_mode=queue_mode,
                 queue_range=queue_range,
                 poisson_lambda=poisson_lambda,
+                catalog_policy=catalog_policy,
             )
             batch.append(sample)
         dataset.extend(batch)

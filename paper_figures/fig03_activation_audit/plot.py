@@ -45,19 +45,23 @@ def compact_legend(ax, nodes, include_line_style):
     )
 
 
-def save(fig, stem):
-    fig.savefig(HERE / 'figures' / f'{stem}.eps', format='eps')
-    fig.savefig(HERE / 'figures' / f'{stem}.jpg', format='jpg', dpi=300, bbox_inches='tight')
+def save(fig, figure_dir, stem):
+    fig.savefig(figure_dir / f'{stem}.eps', format='eps')
+    fig.savefig(figure_dir / f'{stem}.jpg', format='jpg', dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--source', default='../fig02_training_curves/data/raw')
+    parser.add_argument(
+        '--source', type=Path,
+        default=HERE.parent / 'fig02_training_curves/data/raw',
+    )
     parser.add_argument('--nodes', default='20,30,40,50')
     parser.add_argument('--seeds', default='0,1,2')
+    parser.add_argument('--output-root', type=Path, default=HERE)
     args = parser.parse_args()
-    source = (HERE / args.source).resolve()
+    source = args.source.resolve()
     nodes = [int(x) for x in args.nodes.split(',') if x]
     seeds = [int(x) for x in args.seeds.split(',') if x]
 
@@ -78,13 +82,14 @@ def main():
             'binary_active_fraction': np.mean([r['binary_active_fraction'] for r in replicas]),
         })
 
-    plotting_dir = HERE / 'data/plotting'
+    plotting_dir = args.output_root / 'data/plotting'
     plotting_dir.mkdir(parents=True, exist_ok=True)
     with (plotting_dir / 'fig03_epoch_audit.csv').open('w', newline='') as file:
         writer = csv.DictWriter(file, fieldnames=rows[0])
         writer.writeheader()
         writer.writerows(rows)
-    (HERE / 'figures').mkdir(exist_ok=True)
+    figure_dir = args.output_root / 'figures'
+    figure_dir.mkdir(parents=True, exist_ok=True)
 
     with paper_style():
         mpl.rcParams.update({'font.size': 7.5, 'axes.labelsize': 7.5, 'xtick.labelsize': 7, 'ytick.labelsize': 7, 'legend.fontsize': 6.5})
@@ -100,7 +105,7 @@ def main():
         ax.spines[['top', 'right']].set_visible(False)
         ax.grid(axis='both', linestyle='--', linewidth=0.5)
         compact_legend(ax, nodes, include_line_style=True)
-        save(fig, 'fig03_continuous_pi_statistics')
+        save(fig, figure_dir, 'fig03_continuous_pi_statistics')
 
     with paper_style():
         mpl.rcParams.update({'font.size': 7.5, 'axes.labelsize': 7.5, 'xtick.labelsize': 7, 'ytick.labelsize': 7, 'legend.fontsize': 6.5})
@@ -119,7 +124,7 @@ def main():
         ax.spines[['top', 'right']].set_visible(False)
         ax.grid(axis='both', linestyle='--', linewidth=0.5)
         compact_legend(ax, nodes, include_line_style=False)
-        save(fig, 'fig03_binary_active_fraction')
+        save(fig, figure_dir, 'fig03_binary_active_fraction')
 
 
 if __name__ == '__main__':

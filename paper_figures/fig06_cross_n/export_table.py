@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
 RATE_KEY = "mean_aggregate_phy_rate_mbps"
 
 
@@ -21,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        default=HERE / "data/raw/cross_n.json",
+        default=HERE / "data/raw/cross_n_trainSize=300_seed0_epoch50.json",
         help="Raw cross-N JSON produced by the Fig. 6 evaluator.",
     )
     parser.add_argument(
@@ -36,6 +37,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     source = json.loads(args.input.read_text())
+    try:
+        source_path = args.input.resolve().relative_to(ROOT.resolve())
+    except ValueError:
+        source_path = args.input
     nodes = [int(node) for node in source["nodes"]]
     results = source["results"]
 
@@ -60,14 +65,16 @@ def main() -> None:
                     "matched_scale_sum_rate_mbps": f"{matched_rate:.3f}",
                     "relative_performance_percent": f"{100.0 * trained_rate / matched_rate:.2f}",
                     "raw_metric_key": RATE_KEY,
-                    "source_json": str(args.input),
+                    "source_json": source_path.as_posix(),
                 }
             )
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0])
     with args.output.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(
+            handle, fieldnames=fieldnames, lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(rows)
     print(f"Wrote {len(rows)} small-to-large cells to {args.output}")

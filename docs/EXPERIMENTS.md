@@ -40,7 +40,7 @@
 
 ### Fig. 4：Proposed-GAT 数据需求
 
-横轴训练样本数 10/20/30/40/60/80/100/200/300/500，存储训练后所有epoch中效果最好的一个checkpoint；纵轴同一规范 test set 在这个最好checkpoint上的 hard-feasible projected binary rate。N=20/30/40/50 每格 3 个 seed。每个小样本集必须是同一 500-sample pool 的前缀；模型输出先 `pi>=0.5` 二值化，再经过 endpoint mutual matching/shared-UAV hard feasibility，最后在真实 test channel 上结算。`n=300` 复用 Fig. 2 的相同 `(N, seed)` checkpoint，不重复训练。同时存储每种情况下训练过程中的 best_val_util、best checkpoint 和 last checkpoint 作用于 test 集后得到的 soft test utility（pi 没有经过二元化）、hard test utility（pi 经过二元化但不做 hard feasibility）、以及 projected hard-feasible binary rate，这些数值和诊断图不得混为同一指标。
+当前正式横轴为训练样本数 10/20/30/40/60/80/100/200/300；纵轴采用 best-validation checkpoint 在同一规范 test set 上的 soft utility。N=20/30/40/50 每格 3 个 seed。每个小数据集是同一 500-snapshot prefix pool 的前缀，`n=300` 复用 Fig. 2 的相同 `(N, seed)` checkpoint，不重复训练。代码同时保存 best/final checkpoint 的 soft test utility、hard-unprojected utility 和 projected hard-feasible binary rate作为审计指标，但这些诊断曲线不得与正文使用的 `fig04_best_soft_utility.eps` 混为同一指标。n=500 尚未形成完整正式结果，也不进入当前正文图。
 
 ### Fig. 5：动态队列主结果（第五章）
 

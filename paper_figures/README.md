@@ -21,11 +21,11 @@
 - `fig02/run.py --force`：会覆盖 `data/raw/N*/seed*/training.json` 和对应 checkpoint。
 - `fig04/run.py --force`：会覆盖所有 `training.json`、`eval_*.json` 和 checkpoint。
 - `fig05/run.py`：会直接覆盖 `data/raw/{profile}/N*/{metrics.json,per_seed_metrics.json,...}`。
-- `fig06/run.py`：会直接重写其固定输出 `data/raw/cross_n_trainSize={train_size}.json`；不要用它覆盖不同训练样本数的结果。
+- `fig06_cross_n/run.py`：默认复用 300-sample、50-epoch、seed-0 checkpoint，并写入 `data/raw/cross_n_trainSize=300_seed0_epoch50.json`；其他训练样本数仍使用独立文件名。
 - `fig07/resume.py`：Chapter 4 仅在 checkpoint 不存在时训练；已有 checkpoint 和已有 per-mode JSON 都跳过。Chapter 5 每完成一个条件会重写同一个 `chapter5_N*_v2_matched_csi.progress.json`，全部完成后写入 `.json`；同一 N 不得并发运行两个进程。
 - `fig08/run.py`：会调用底层断点逻辑并重写相应最终 JSON；需要补缺或中断恢复时，使用 `fig08/resume.py`，不要假设 `run.py` 有 `--force`。
 
-所有 `plot.py` 只读数据，不写原始 JSON，永远安全。
+所有 `plot.py` 都只读原始 JSON，不会改写仿真数据；但默认输出目录中的同名 EPS/JPG 仍可能被重写。Fig. 1--7 的最终作图都应显式传入 `--output-root results/paper/tnse_current_plots`，避免覆盖历史图。四阶段顺序命令见 `docs/PAPER_FIGURE_PIPELINE.md`。
 
 ## 第三方依赖与环境
 
@@ -82,7 +82,7 @@ conda env create -f baseline/environments/distgcn_legacy.yml
 ## 统一前提
 
 - 实验固定条件：N=20/30/40/50、10 dBm、Rician K=5 dB、train/val/test=300/128/128、slot=1 ms、packet=12000 bit。
-- 所有 `run.py/plot.py` 均在项目根目录运行（`cd /workspace/GNN_Scheduling_codex`）。
+- 所有 `run.py/plot.py` 均在项目根目录运行（本机为 `cd /Users/zqz/Documents/Codex/GNN_Scheduling`）。
 - 环境变量示例：
   ```bash
   CUDA_VISIBLE_DEVICES=0 \
@@ -119,7 +119,7 @@ conda env create -f baseline/environments/distgcn_legacy.yml
 | B：有数据、无 checkpoint | `uv run python -u paper_figures/fig01_full_buffer/run.py --stage train` | 验证 N=20/30/40/50 的 `full_300` checkpoint 是否存在（N=300 的正式 checkpoint 复用 Fig. 2 的训练结果）；不重复训练 |
 | C：有数据和模型、缺结果 JSON | `SPATIAL_DL_PYTHON="$PWD/.venv/bin/python" uv run python -u paper_figures/fig01_full_buffer/run.py --stage evaluate` | 在 128 个共同测试快照上评测六种方法；已有 JSON 跳过，可用 `--force` 强制重算 |
 | C：重算指定 N | 同上，加 `--nodes 20,50` | 只评测指定 N |
-| D：已有 JSON | `uv run python -u paper_figures/fig01_full_buffer/plot.py` | 读取 `benchmark_N*.json`，生成 `figures/fig01_total_rate.eps` |
+| D：已有 JSON | `uv run python -u paper_figures/fig01_full_buffer/plot.py --raw-dir paper_figures/fig01_full_buffer/data/raw --output-root results/paper/tnse_current_plots` | 读取 `benchmark_N*.json`，在统一隔离目录生成图和 CSV |
 
 **注意：** `--stage train` 不训练新模型，只复用 Fig. 2 已经保存的 `best_model.pth/final_model.pth`（位置：`checkpoints/paper/proposed_gat/rician_K5_tx10/N{num_uav}/seed{model_seed}/full_300/`）。
 
@@ -138,8 +138,9 @@ N=20/30/40/50，每条曲线平均 3 个训练 seed（`--seeds 0,1,2`）。
 
 | 你当前状态 | 命令 | 实际行为 |
 |---|---|---|
-| A/B/C：缺少任意 N×seed 训练 | `uv run python -u paper_figures/fig02_training_curves/run.py --nodes 20,30,40,50 --seeds 0,1,2 --epochs 50` | 缺训练则训练；已有 `training.json` + 双 checkpoint 则跳过；训练完成后自动在规范测试集上运行 soft/hard/projected 三种评测 |
-| D：12 个 `training.json` 均存在 | `uv run python -u paper_figures/fig02_training_curves/plot.py --nodes 20,30,40,50 --seeds 0,1,2` | 生成两张 EPS：`fig02_training_loss.eps` 和 `fig02_validation_rate.eps` |
+| B：缺少任意 N×seed checkpoint | `uv run python -u paper_figures/fig02_training_curves/run.py --stage train --nodes 20,30,40,50 --seeds 0,1,2 --epochs 50` | 只训练缺失模型和日志，不执行测试 |
+| C：已有 checkpoint、缺测试结果 | `uv run python -u paper_figures/fig02_training_curves/run.py --stage evaluate --nodes 20,30,40,50 --seeds 0,1,2 --epochs 50` | 只使用已有 checkpoint 运行 soft/hard/projected 评测，不训练 |
+| D：12 个 `training.json` 均存在 | `uv run python -u paper_figures/fig02_training_curves/plot.py --nodes 20,30,40,50 --seeds 0,1,2 --raw-root paper_figures/fig02_training_curves/data/raw --output-root results/paper/tnse_current_plots` | 生成 training loss、binary validation 及诊断曲线 |
 
 **`--force` 会覆盖已有训练报告和 checkpoint**，慎用。
 
@@ -160,7 +161,7 @@ Fig. 3 不训练新模型，**复用 Fig. 2 完全相同的 4×3=12 条训练轨
 |---|---|---|
 | A--C：Fig. 2 轨迹不存在 | 先运行 Fig. 2 的 `run.py` | Fig. 3 不重复训练 |
 | 已有 Fig. 2 轨迹 | `uv run python -u paper_figures/fig03_activation_audit/run.py` | 将 Fig. 2 的 `training.json` 同步到 Fig. 3 的 `data/raw/` 目录（--source 可指定其他路径） |
-| D：输入 JSON 齐全 | `uv run python -u paper_figures/fig03_activation_audit/plot.py` | 生成两张独立 EPS |
+| D：输入 JSON 齐全 | `uv run python -u paper_figures/fig03_activation_audit/plot.py --source paper_figures/fig02_training_curves/data/raw --output-root results/paper/tnse_current_plots` | 在统一隔离目录生成两张 EPS/JPG 和 CSV |
 
 ---
 
@@ -168,18 +169,17 @@ Fig. 3 不训练新模型，**复用 Fig. 2 完全相同的 4×3=12 条训练轨
 
 目录：[`fig04_data_efficiency/`](fig04_data_efficiency/)
 
-横轴训练样本数 10/20/30/40/60/80/100/200/300/500，N=20/30/40/50，每格 3 个 seed。
-每个小样本集必须是同一 500-sample pool 的前缀；n=300 复用 Fig. 2 的 `(N, seed)` checkpoint，不重复训练。
+当前正式横轴为训练样本数 10/20/30/40/60/80/100/200/300，N=20/30/40/50，每格 3 个 seed。每个小样本集是同一 500-sample prefix pool 的前缀；n=300 复用 Fig. 2 的 `(N, seed)` checkpoint，不重复训练。n=500 尚未形成完整正式结果，因此当前图明确不读取它。
 
-**指标口径：** 主曲线 `fig04_best_projected_rate` 是 best-validation checkpoint 在同一规范 128-sample test set 上的 **hard-feasible projected binary rate**：`pi >= 0.5`，再做 endpoint mutual matching/shared-UAV feasibility，最后用真实 test channel 结算。它不是 soft utility，也不是仅 threshold 后未经 projection 的 binary utility。代码同时保存并绘制 audit 指标：best/final checkpoint 的 soft rate、hard-unprojected rate、projected rate，以及训练阶段 `best_val_utility`；这些指标不能互相替代。
+**指标口径：** 当前论文引用的主曲线是 `fig04_best_soft_utility.eps`，展示 best-validation checkpoint 在同一规范 128-sample test set 上的连续 soft utility。代码同时保存并绘制 hard-unprojected、hard-feasible projected rate 和 final-checkpoint 等诊断曲线；这些指标不能互相替代，也不能用诊断图替换正文当前的 soft-utility 图。
 
-**文件布局：** `data/raw/N{20,30,40,50}/n{10,20,...,500}/seed{0,1,2}/training.json` + `eval_best_*.json` + `eval_final_*.json`
+**文件布局：** `data/raw/N{20,30,40,50}/n{10,20,...,300}/seed{0,1,2}/training.json` + `eval_best_*.json` + `eval_final_*.json`
 
 | 你当前状态 | 命令 | 实际行为 |
 |---|---|---|
-| A/B/C：缺少任意 (N, size, seed) 组合 | `uv run python -u paper_figures/fig04_data_efficiency/run.py --nodes 20,30,40,50 --epochs 50` | 缺模型则训练；n=300 自动复用 Fig. 2 checkpoint；训练后自动运行 best/final checkpoint 的 soft/hard/projected 三种评测 |
-| C：只跑 n=500 | `uv run python -u paper_figures/fig04_data_efficiency/run.py --train_size 500 --nodes 20,30,40,50 --epochs 50` | 单独运行 n=500 训练（不使用 Fig. 2 的 n=300 checkpoint） |
-| D：所有 `eval_*.json` 已存在 | `uv run python -u paper_figures/fig04_data_efficiency/plot.py` | 生成 `fig04_best_projected_rate.eps`（主曲线）及其他诊断 EPS |
+| B：缺少任意 (N, size, seed) checkpoint | `uv run python -u paper_figures/fig04_data_efficiency/run.py --stage train --nodes 20,30,40,50 --sizes 10,20,30,40,60,80,100,200,300 --epochs 50` | 只训练缺失模型；n=300 自动复用 Fig. 2 checkpoint |
+| C：已有 checkpoint、缺评测 | `uv run python -u paper_figures/fig04_data_efficiency/run.py --stage evaluate --nodes 20,30,40,50 --sizes 10,20,30,40,60,80,100,200,300 --epochs 50` | 只运行 best/final checkpoint 的 soft/hard/projected 评测 |
+| D：所有 `eval_*.json` 已存在 | `uv run python -u paper_figures/fig04_data_efficiency/plot.py --raw-root paper_figures/fig04_data_efficiency/data/raw --sizes 10,20,30,40,60,80,100,200,300 --output-root results/paper/tnse_current_plots` | 在统一隔离目录生成正文 soft-utility 主曲线及诊断图 |
 
 ---
 
@@ -216,8 +216,8 @@ data/raw/deadline_2000ms/N50/{metrics.json,per_seed_metrics.json,config.json,tra
 |---|---|---|
 | C1：无限缓存、无 deadline | `uv run python -u paper_figures/fig05_dynamic_queue/run.py --nodes 50 --slots 10000 --seeds 42 --deadline-ms none` | 运行无 deadline 口径；结果写入 `data/raw/no_deadline/N50/` |
 | C2：2000 ms deadline | `uv run python -u paper_figures/fig05_dynamic_queue/run.py --nodes 50 --slots 10000 --seeds 42 --deadline-ms 2000` | 运行 deadline 口径；结果写入 `data/raw/deadline_2000ms/N50/` |
-| D1：已有无限 deadline 结果 | `uv run python -u paper_figures/fig05_dynamic_queue/plot.py --profile no_deadline` | 读取 `no_deadline/N50/` 生成 backlog/delay/goodput EPS |
-| D2：已有 2000 ms 结果 | `uv run python -u paper_figures/fig05_dynamic_queue/plot.py --profile deadline_2000ms` | 读取 `deadline_2000ms/N50/` 生成 backlog/delay/goodput EPS |
+| D1：已有无限 deadline 结果 | `uv run python -u paper_figures/fig05_dynamic_queue/plot.py --profile no_deadline --raw-root <raw-root> --output-root <new-output-root>` | 从指定结果目录读取数据，并把图和 CSV 写入独立输出目录 |
+| D2：新版 2000 ms 正式结果 | `uv run python -u paper_figures/fig05_dynamic_queue/plot.py --profile deadline_2000ms --nodes 50 --raw-root results/paper/ch5_local_coordination_v1/fig05_merged_N50_seed42 --output-root results/paper/tnse_current_plots --metrics backlog,delay,goodput` | 读取新版 14×7 正式结果，不覆盖历史 Fig. 5 图 |
 
 > **注意：** `--profile no_deadline` 和 `--profile deadline_2000ms` 不可混用；两者生成独立的 EPS。两套口径的 delay 定义不同：无限缓存口径统计已完成的包（高负载下 right-censored）；2000 ms 口径对完成包用实际 FIFO delay，对 deadline/buffer drop 记 2000 ms 惩罚，分母只含已解决包。
 
@@ -227,18 +227,17 @@ data/raw/deadline_2000ms/N50/{metrics.json,per_seed_metrics.json,config.json,tra
 
 目录：[`fig06_cross_n/`](fig06_cross_n/)
 
-训练 N=20/30/40/50/mixed 的 Proposed-GAT 在 N=20/30/40/50 测试集上互测。
-train_size=500。若 JSON 中存在 mixed checkpoint，实际图包含五条训练来源曲线（N=20、30、40、50、mixed），不是热图。
+训练 N=20/30/40/50 的 Proposed-GAT 在 N=20/30/40/50 测试集上互测。正式结果统一复用 Fig. 2 的 300-sample、50-epoch、seed-0 checkpoint。若另行传入 mixed checkpoint，诊断图也可显示 mixed 训练来源。
 
 **指标口径：** 每个 train-N/test-N 单元格的指标是 128 个测试样本上的平均 **hard-feasible binary aggregate sum rate**，字段为 `mean_aggregate_phy_rate_mbps`。模型输出先 `pi >= 0.5`，再用 endpoint mutual matching 解码，确认 shared-UAV feasibility，最后在 test-N 的真实 Rician channel 上计算所有激活链路 achievable rate 之和。它不是 soft sum rate、active-link fraction 或 queue utility。`export_table.py` 额外输出 train-N ≤ test-N 单元格相对于同一 test-N matched-scale checkpoint 的 rate 百分比；该百分比不是新的仿真指标。
 
-**文件布局：** `data/raw/cross_n_trainSize=500.json`（主文件）+ `cross_n_raw.json`（详细调试数据）
+**文件布局：** `data/raw/cross_n_trainSize=300_seed0_epoch50.json`（正式主文件）+ `cross_n_raw.json`（历史详细调试数据）
 
 | 你当前状态 | 命令 | 实际行为 |
 |---|---|---|
-| C：无 `cross_n_trainSize=500.json` | `uv run python -u paper_figures/fig06_cross_n/run.py --device cuda --train_size 500` | 训练缺失 scale 的 checkpoint（若已有则跳过），然后执行 4×4 互测 |
-| D：已有 JSON | `uv run python -u paper_figures/fig06_cross_n/plot.py` | 读取 JSON 生成 `fig06_cross_network_generalization.eps` |
-| D：生成投稿表格 | `uv run python -u paper_figures/fig06_cross_n/export_table.py --input paper_figures/fig06_cross_n/data/raw/cross_n_trainSize=500.json` | 从正式 500-sample JSON 生成 `data/plotting/fig06_small_to_large_table.csv`（只含 train ≤ test 单元格） |
+| C：无正式 JSON | `uv run python -u paper_figures/fig06_cross_n/run.py --device cuda` | 复用各规模的 300-sample、50-epoch、seed-0 checkpoint，并执行 4×4 互测 |
+| D：已有 JSON | `uv run python -u paper_figures/fig06_cross_n/plot.py --input paper_figures/fig06_cross_n/data/raw/cross_n_trainSize=300_seed0_epoch50.json --output-root results/paper/tnse_current_plots` | 读取正式 JSON，在统一隔离目录生成图和 plotting CSV |
+| D：生成投稿表格 | `uv run python -u paper_figures/fig06_cross_n/export_table.py` | 从正式 JSON 生成 `data/plotting/fig06_small_to_large_table.csv`（只含 train ≤ test 单元格） |
 
 ---
 
@@ -272,12 +271,13 @@ chapter5_N{20,30,40,50}_v2_matched_csi.progress.json        ← 断点续跑中�
 
 | 你当前状态 | 命令 | 实际行为 |
 |---|---|---|
-| C：缺任何第四章 v2 JSON | `uv run python -u paper_figures/fig07_csi_feedback/resume.py --nodes 20,30,40,50 --chapters 4 --epochs 50 --device cuda` | 遍历 N×7 种 CSI 条件，缺 checkpoint 则训练，然后执行评测；已有 JSON 跳过 |
+| B：缺第四章 matched-CSI checkpoint | `uv run python -u paper_figures/fig07_csi_feedback/resume.py --stage train --nodes 20,30,40,50 --chapters 4 --epochs 50 --device cuda` | 只补 checkpoint，不执行评测 |
+| C：缺任何第四章 v2 JSON | `uv run python -u paper_figures/fig07_csi_feedback/resume.py --stage evaluate --nodes 20,30,40,50 --chapters 4 --epochs 50 --device cuda` | 只使用已有 checkpoint 评测；缺 checkpoint 时明确报错，不训练 |
 | C：N=50 先行两个条件 | `uv run python -u paper_figures/fig07_csi_feedback/resume.py --nodes 50 --chapters 4 --epochs 50 --device cuda` | 仅处理 N=50 |
 | C：缺第五章任何 JSON | `uv run python -u paper_figures/fig07_csi_feedback/resume.py --nodes 20,30,40,50 --chapters 5 --slots 10000 --seeds 42 --arrival-rate 2.4 --device cuda` | 缺 checkpoint 则报错退出；否则对每个 N 载入全部 7 个匹配 GAT 模型，在同一移动轨迹上比较所有 CSI 条件 |
-| C：N=50 分两段续跑（支持断点） | 第一段：`--csi-methods latest,large_scale`；等 checkpoint 齐全后第二段：`--csi-methods latest,large_scale,quantized_2bit,quantized_4bit,quantized_6bit,quantized_8bit,quantized_10bit` | 两次 `--csi-methods` 参数不同但输出路径相同；脚本自动读取已有的 `.progress.json` 跳过已完成条件，最终合并为完整 7 条记录的 `.json` |
-| D：N=20/30/40 Chapter 5 JSON 完整 | `uv run python -u paper_figures/fig07_csi_feedback/plot.py --nodes 20,30,40 --chapters 5` | 生成 Chapter 5 折线图：量化 bit 为实线，perfect/large-scale 为同色参考线 |
-| D：所有 Chapter 4/5 JSON 完整 | `uv run python -u paper_figures/fig07_csi_feedback/plot.py --nodes 20,30,40,50 --chapters 4,5` | 生成两张 EPS：`fig07_chapter4_csi_rate.eps`（第四章）和 `fig07_chapter5_gat_mp_backlog.eps`（第五章） |
+| C：第五章完整续跑 | `uv run python -u paper_figures/fig07_csi_feedback/resume.py --stage evaluate --nodes 20,30,40,50 --chapters 5 --slots 10000 --seeds 42 --arrival-rate 2.4 --device cuda --chapter5-output-root <new-result-root>` | 自动读取同一路径的 `.progress.json`，跳过已经完成的 CSI 条件；当前 wrapper 一次处理全部七种条件 |
+| D：新版 Chapter 5 JSON 完整 | `uv run python -u paper_figures/fig07_csi_feedback/plot.py --nodes 20,30,40,50 --chapters 5 --chapter5-raw-root results/paper/ch5_local_coordination_v1/fig07_full --output-root results/paper/tnse_current_plots` | 从新版 N=20/30/40/50 matched-CSI 结果生成 Chapter 5 图，不覆盖历史 Fig. 7 |
+| D：同时渲染冻结的 Chapter 4 和新版 Chapter 5 | `uv run python -u paper_figures/fig07_csi_feedback/plot.py --nodes 20,30,40,50 --chapters 4,5 --chapter4-raw-root paper_figures/fig07_csi_feedback/data/raw --chapter5-raw-root results/paper/ch5_local_coordination_v1/fig07_full --output-root results/paper/tnse_current_plots` | 在统一隔离目录生成两个 EPS 和对应 CSV；不会训练或重新评测 Chapter 4 |
 
 > 第五章的 `resume.py` 使用 `experiments/evaluate_mobile_block_fading_csi.py`，每次运行固定写入同一个 `chapter5_N{num}_v2_matched_csi.progress.json`，完成后写入 `.json`。同一 N 的多次续跑必须使用**相同** `--seeds`、`--speeds-mps`、`--slots-per-block`、`--stale-blocks`、`--arrival-rates`、`--scheduler-variants` 参数，否则断点续跑逻辑可能跳过或重复。
 
@@ -318,20 +318,19 @@ data/raw/gatmp_block_N{20,30,40,50}.json + .progress.json
 
 ---
 
-## 当前已有数据状态（2026-07-30）
+## 当前已有数据状态（2026-08-13）
 
 | 图 | N | 数据状态 | 备注 |
 |---|---|---|---|
 | Fig. 1 | 20/30/40/50 | ✅ `benchmark_N*.json` 完整 | 可直接运行 `plot.py` |
 | Fig. 2 | 20/30/40/50 | ✅ `training.json` × 3 seed 完整 | 可直接运行 `plot.py` |
 | Fig. 3 | 20/30/40/50 | ✅ 复用 Fig. 2 轨迹 | 可直接运行 `plot.py` |
-| Fig. 4 | 20/30/40/50 | ✅ n=10~300 完整，缺 n=500 | 需单独运行 `--train_size 500` |
-| Fig. 5 (2000ms) | 50 | ✅ 完整 7 方法 | 可直接运行 `plot.py --profile deadline_2000ms` |
-| Fig. 5 (no deadline) | 50 | ✅ 完整 | 可直接运行 `plot.py --profile no_deadline` |
-| Fig. 6 | — | ⚠️ 仅有旧名 `cross_n.json`/`cross_n_raw.json`，缺正式 `cross_n_trainSize=500.json` | 运行 `fig06_cross_n/run.py --train_size 500` 后再作图 |
-| Fig. 7 Ch4 | 20/30/40 | ✅ 7 种 CSI 条件完整 | 可直接生成 Chapter 4 EPS |
-| Fig. 7 Ch4 | 50 | ⚠️ 只有 `perfect`、`large_scale` | 还需量化 2/4/6/8/10-bit |
-| Fig. 7 Ch5 | 20/30 | ✅ `chapter5_N*_v2_matched_csi.json` 完整 | 可直接生成 Chapter 5 EPS |
-| Fig. 7 Ch5 | 40 | ⚠️ 只有 `latest`、`large_scale` 两条 progress | 需续跑补量化 2/4/6/8/10-bit |
-| Fig. 7 Ch5 | 50 | ⚠️ 已有 `latest`、`large_scale` 两条记录；量化条件正在分批补齐 | 最后一次续跑必须传入完整 7 个 `--csi-methods`，使最终 JSON 带完整 matched-model provenance |
+| Fig. 4 | 20/30/40/50 | ✅ 当前正式 n=10~300 全部完整 | n=500 不在当前正文横轴，不需要为出图补训 |
+| Fig. 5 (2000ms) | 50 | ✅ 新协议正式结果完整：14 负载 × 7 方法，seed 42，10000 slots | 使用新版 `--raw-root` 和独立 `--output-root` 作图 |
+| Fig. 5 (no deadline) | 50 | ✅ 历史内部对照完整 | 如需重画也应显式指定独立 `--output-root` |
+| Fig. 6 | 20/30/40/50 | ✅ 300-sample、50-epoch、seed-0 正式 JSON 已生成 | 可直接作图或导出表格 |
+| Fig. 7 Ch4 | 20/30/40/50 | ✅ 冻结结果完整：每个 N 均有 7 种 CSI 条件 | 只读取现有 JSON 作图，不重新训练或评测 |
+| Fig. 7 Ch5 | 20/30/40/50 | ✅ 新协议正式结果完整：每个 N 均有 7 个 matched-CSI 条件，seed 42，10000 slots | 使用 `--chapter5-raw-root results/paper/ch5_local_coordination_v1/fig07_full` 作图 |
+| Chapter V result audit | Fig. 5 + Fig. 7 | ✅ 53/53 checks passed | `uv run python -u experiments/audit_chapter5_results.py` |
+| Fig. 1--7 current bundle | 全部投稿面板 | ✅ 已生成到统一独立目录 | `results/paper/tnse_current_plots/` |
 | Fig. 8 | 20/30/40/50 | ✅ `gatmp_speed/block_N*.json` 完整 | 可直接运行 `plot.py` |

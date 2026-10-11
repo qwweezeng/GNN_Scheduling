@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import pickle
 import subprocess
 import sys
 from pathlib import Path
@@ -20,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from models.model import calculate_achievable_rate
-from utils.artifacts import expected_dataset_metadata, paper_dataset_paths
+from utils.artifacts import (
+    dataset_split_fingerprint,
+    expected_dataset_metadata,
+    load_validated_dataset,
+    paper_dataset_paths,
+)
 from utils.feasibility import (
     decode_endpoint_mutual_matching,
     shared_uav_action_audit,
@@ -28,8 +32,9 @@ from utils.feasibility import (
 from utils.project_setup import (
     build_gat_scheduler,
     channel_checkpoint_path,
-    load_channel_gat,
+    load_channel_gat_checkpoint,
     load_config,
+    proposed_gat_checkpoint_dir,
 )
 
 
@@ -62,29 +67,31 @@ def test_states(n: int, train_size: int):
     seeds = {"train": 10086, "val": 10087, "test": 10088}
     sizes = {"train": train_size, "val": 128, "test": 128}
     _, p = paper_dataset_paths(ROOT / "datasets/paper", n, seeds, sizes)
-    with p.open("rb") as handle:
-        payload = pickle.load(handle)
-
-    metadata = payload.get("metadata", {})
-    errors = []
-    if metadata.get("schema") != "tnse_channel_dataset_v1":
-        errors.append("schema")
-    if metadata.get("physics") != expected_dataset_metadata(c, n, seeds, sizes)["physics"]:
-        errors.append("physics")
-    if metadata.get("split_seeds", {}).get("test") != seeds["test"]:
-        errors.append("test seed")
-    if metadata.get("split_sizes", {}).get("test") != sizes["test"]:
-        errors.append("test size")
-    test_set = payload.get("test_set")
-    if test_set is None or len(test_set) != sizes["test"]:
-        errors.append("test payload")
-    if errors:
-        raise ValueError(f"Test cache {p} is incompatible: {errors}")
-    return test_set, metadata["fingerprint"], str(p)
+    expected = expected_dataset_metadata(c, n, seeds, sizes)
+    payload = load_validated_dataset(p, expected, ("test",))
+    return (
+        payload["test_set"],
+        dataset_split_fingerprint(expected, "test"),
+        expected["fingerprint"],
+        str(p),
+    )
 
 
 def ensure_checkpoint(num_uav: int, train_size: int, device: str) -> Path:
     """Train (or reuse) a channel GAT checkpoint for the given num_uav and train_size."""
+    if train_size == 300:
+        # Reuse the canonical 50-epoch seed-0 full_300 model shared by the
+        # conference experiments and the journal's physical-layer section.
+        ckpt_path = (
+            proposed_gat_checkpoint_dir(num_uav, 0, "full_300")
+            / "best_model.pth"
+        )
+        if not ckpt_path.exists():
+            raise FileNotFoundError(
+                f"Frozen 300-sample checkpoint missing: {ckpt_path}"
+            )
+        print(f"[ensure_checkpoint] reuse 50-epoch seed-0 {ckpt_path}", flush=True)
+        return ckpt_path
     ckpt_path = channel_checkpoint_path(cfg(num_uav), num_uav, train_size)
     if ckpt_path.exists():
         print(f"[ensure_checkpoint] reuse existing {ckpt_path}", flush=True)
@@ -195,8 +202,8 @@ def main():
     parser.add_argument(
         "--train_size",
         type=int,
-        default=500,
-        help="Training set size (default: 500)",
+        default=300,
+        help="Training set size (default: 300)",
     )
     parser.add_argument(
         "--output",
@@ -227,11 +234,41 @@ def main():
 
     matrix: dict = {}
     checkpoints: dict = {}
+    checkpoint_metadata: dict = {}
 
     for tr in ns:
         ckpt_path = ensure_checkpoint(tr, args.train_size, device)
-        m, ck = load_channel_gat(cfg(tr), tr, device=device, train_size=args.train_size)
+        checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        if args.train_size == 300:
+            checkpoint_config = checkpoint.get("config", {})
+            subset = checkpoint.get("training_subset", {})
+            if (
+                int(checkpoint_config.get("MODEL_SEED", -1)) != 0
+                or len(checkpoint.get("per_epoch_logs", [])) != 50
+                or int(subset.get("selected_size", -1)) != 300
+                or int(subset.get("pool_size", -1)) != 300
+            ):
+                raise ValueError(
+                    f"Unexpected canonical 50-epoch seed-0 checkpoint: {ckpt_path}"
+                )
+            m, ck = load_channel_gat_checkpoint(
+                cfg(tr),
+                ckpt_path,
+                train_num_uav=tr,
+                device=device,
+                expected_dataset_fingerprint=tests[tr][2],
+            )
+        else:
+            m, ck = load_channel_gat_checkpoint(
+                cfg(tr), ckpt_path, train_num_uav=tr, device=device
+            )
         checkpoints[str(tr)] = ck
+        checkpoint_metadata[str(tr)] = {
+            "model_seed": int(checkpoint.get("config", {}).get("MODEL_SEED", -1)),
+            "epochs": len(checkpoint.get("per_epoch_logs", [])),
+            "best_epoch": int(checkpoint.get("best_epoch", -1)),
+            "dataset_fingerprint": checkpoint.get("dataset_fingerprint"),
+        }
         matrix[str(tr)] = {}
         for te in ns:
             r = evaluate(m, tests[te][0])
@@ -266,7 +303,7 @@ def main():
     Path(args.output).write_text(
         json.dumps(
             {
-                "schema": "tnse_fig06_cross_n_v3",
+                "schema": "tnse_fig06_cross_n_v4",
                 "nodes": ns,
                 "train_size": args.train_size,
                 "physics": {
@@ -277,10 +314,13 @@ def main():
                     "decoder": "one_round_endpoint_mutual_matching",
                 },
                 "checkpoints": checkpoints,
+                "checkpoint_metadata": checkpoint_metadata,
                 "test_sets": {
                     str(n): {
-                        "path": tests[n][2],
+                        "path": tests[n][3],
                         "fingerprint": tests[n][1],
+                        "fingerprint_scope": "test_split_only",
+                        "dataset_family_fingerprint": tests[n][2],
                         "samples": len(tests[n][0]),
                     }
                     for n in ns

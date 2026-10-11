@@ -26,8 +26,8 @@ CSI_MODES = ("perfect", "large_scale", "quantized_2bit",
              "quantized_8bit", "quantized_10bit")
 
 
-def _load_ch4_rate(num_uav: int, mode: str) -> float | None:
-    path = HERE / "data/raw" / f"chapter4_N{num_uav}_v2_{mode}.json"
+def _load_ch4_rate(raw_root: Path, num_uav: int, mode: str) -> float | None:
+    path = raw_root / f"chapter4_N{num_uav}_v2_{mode}.json"
     if not path.exists():
         return None
     try:
@@ -42,9 +42,9 @@ def _load_ch4_rate(num_uav: int, mode: str) -> float | None:
 # Chapter 5: single queue-backlog file per N; method encoded in key.
 # ------------------------------------------------------------------
 
-def _load_ch5_backlog(num_uav: int) -> dict[str, float]:
+def _load_ch5_backlog(raw_root: Path, num_uav: int) -> dict[str, float]:
     """Load only matched-model Chapter V data; legacy single-model output is rejected."""
-    path = HERE / f"data/raw/chapter5_N{num_uav}_v2_matched_csi.json"
+    path = raw_root / f"chapter5_N{num_uav}_v2_matched_csi.json"
     if not path.exists():
         return {}
     with path.open() as fh:
@@ -69,13 +69,15 @@ def _load_ch5_backlog(num_uav: int) -> dict[str, float]:
     return result
 
 
-def _quantization_bits_intersection(nodes: tuple[int, ...]) -> tuple[int, ...]:
+def _quantization_bits_intersection(
+    raw_root: Path, nodes: tuple[int, ...]
+) -> tuple[int, ...]:
     """Return the bit values that appear across ALL requested nodes."""
     # Sample the first node to discover available modes; then intersect.
     first_n = nodes[0]
     available = {}
     for mode in CSI_MODES:
-        val = _load_ch4_rate(first_n, mode)
+        val = _load_ch4_rate(raw_root, first_n, mode)
         if val is not None:
             available[mode] = val
     if not available:
@@ -86,7 +88,7 @@ def _quantization_bits_intersection(nodes: tuple[int, ...]) -> tuple[int, ...]:
     for n in nodes[1:]:
         present = set()
         for mode in CSI_MODES:
-            if _load_ch4_rate(n, mode) is not None:
+            if _load_ch4_rate(raw_root, n, mode) is not None:
                 present.add(mode)
         common &= present
 
@@ -97,11 +99,11 @@ def _quantization_bits_intersection(nodes: tuple[int, ...]) -> tuple[int, ...]:
     return tuple(int(m.split("_")[1][:-3]) for m in quant_modes)
 
 
-def _build_ch4_rows(nodes: tuple[int, ...]) -> list[dict]:
+def _build_ch4_rows(raw_root: Path, nodes: tuple[int, ...]) -> list[dict]:
     rows = []
     for n in nodes:
         for mode, val in {
-            m: _load_ch4_rate(n, m)
+            m: _load_ch4_rate(raw_root, n, m)
             for m in CSI_MODES
         }.items():
             if val is not None:
@@ -109,10 +111,10 @@ def _build_ch4_rows(nodes: tuple[int, ...]) -> list[dict]:
     return rows
 
 
-def _build_ch5_rows(nodes: tuple[int, ...]) -> list[dict]:
+def _build_ch5_rows(raw_root: Path, nodes: tuple[int, ...]) -> list[dict]:
     rows = []
     for n in nodes:
-        backlogs = _load_ch5_backlog(n)
+        backlogs = _load_ch5_backlog(raw_root, n)
         for method, val in backlogs.items():
             rows.append({"num_uav": n, "method": method, "value": val})
     return rows
@@ -123,7 +125,7 @@ def _build_ch5_rows(nodes: tuple[int, ...]) -> list[dict]:
 # ------------------------------------------------------------------
 
 def _draw_ch4(rate_rows: list[dict], nodes: tuple[int, ...],
-              bits: tuple[int, ...], *, stem: str) -> None:
+              bits: tuple[int, ...], *, output_root: Path, stem: str) -> None:
     """Chapter 4: sum rate vs. quantization bits, with perfect/large-scale baselines."""
     from matplotlib.lines import Line2D
     with paper_style():
@@ -175,8 +177,7 @@ def _draw_ch4(rate_rows: list[dict], nodes: tuple[int, ...],
             labels=ref_labels + [f"N={n}" for n in nodes],
             ncol=2, fontsize=6.5
         )
-        out = HERE / "figures" / stem
-        HERE.mkdir(exist_ok=True)
+        out = output_root / "figures" / stem
         out.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out, format="eps")
         fig.savefig(out.with_suffix(".jpg"), format="jpg", dpi=300, bbox_inches="tight")
@@ -184,7 +185,7 @@ def _draw_ch4(rate_rows: list[dict], nodes: tuple[int, ...],
 
 
 def _draw_ch5(backlog_rows: list[dict], nodes: tuple[int, ...],
-              *, stem: str) -> None:
+              *, output_root: Path, stem: str) -> None:
     """Chapter 5: backlog versus quantization precision with CSI references."""
     from matplotlib.lines import Line2D
     if not backlog_rows:
@@ -260,7 +261,7 @@ def _draw_ch5(backlog_rows: list[dict], nodes: tuple[int, ...],
             labels=ref_labels + [f"N={n}" for n in nodes],
             ncol=2, fontsize=6.5
         )
-        out = HERE / "figures" / stem
+        out = output_root / "figures" / stem
         out.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(out, format="eps")
         fig.savefig(out.with_suffix(".jpg"), format="jpg", dpi=300, bbox_inches="tight")
@@ -277,6 +278,25 @@ def main() -> None:
         "--chapters", default="4,5",
         help="Comma-separated panels to render: 4, 5, or 4,5 (default).",
     )
+    parser.add_argument(
+        "--chapter4-raw-root",
+        default="",
+        help="Optional directory containing Chapter IV per-condition JSON files.",
+    )
+    parser.add_argument(
+        "--chapter5-raw-root",
+        default="",
+        help="Optional directory containing Chapter V matched-CSI JSON files.",
+    )
+    parser.add_argument(
+        "--output-root",
+        default="",
+        help=(
+            "Optional root for generated figures and plotting CSV. "
+            "Outputs go to <root>/figures and <root>/data/plotting; "
+            "the historical paper_figures directory is used only when omitted."
+        ),
+    )
     args = parser.parse_args()
     nodes = tuple(int(x) for x in args.nodes.split(",") if x)
     chapters = {int(value) for value in args.chapters.split(",") if value}
@@ -285,17 +305,25 @@ def main() -> None:
     if not chapters or not chapters.issubset({4, 5}):
         raise ValueError("--chapters must contain only 4 and/or 5")
 
-    raw = HERE / "data/raw"
-    raw.mkdir(parents=True, exist_ok=True)
-    plotting = HERE / "data/plotting"
+    default_raw = HERE / "data/raw"
+    chapter4_raw = Path(args.chapter4_raw_root) if args.chapter4_raw_root else default_raw
+    chapter5_raw = Path(args.chapter5_raw_root) if args.chapter5_raw_root else default_raw
+    output_root = Path(args.output_root) if args.output_root else HERE
+    if not chapter4_raw.is_absolute():
+        chapter4_raw = ROOT / chapter4_raw
+    if not chapter5_raw.is_absolute():
+        chapter5_raw = ROOT / chapter5_raw
+    if not output_root.is_absolute():
+        output_root = ROOT / output_root
+    plotting = output_root / "data/plotting"
     plotting.mkdir(parents=True, exist_ok=True)
 
     # ---------- Chapter 4 ----------
     if 4 in chapters:
-        rate_rows = _build_ch4_rows(nodes)
+        rate_rows = _build_ch4_rows(chapter4_raw, nodes)
         if not rate_rows:
             raise ValueError("No Chapter 4 v2 data found for the requested nodes")
-        bits = _quantization_bits_intersection(nodes)
+        bits = _quantization_bits_intersection(chapter4_raw, nodes)
 
         ch4_csv = plotting / "fig07_chapter4_csi_rate.csv"
         with ch4_csv.open("w", newline="") as fh:
@@ -306,11 +334,17 @@ def main() -> None:
             f"[plot] chapter4 CSV: {ch4_csv}  "
             f"({len(rate_rows)} rows, {len(bits)} quantization levels)"
         )
-        _draw_ch4(rate_rows, nodes, bits, stem="fig07_chapter4_csi_rate.eps")
+        _draw_ch4(
+            rate_rows,
+            nodes,
+            bits,
+            output_root=output_root,
+            stem="fig07_chapter4_csi_rate.eps",
+        )
 
     # ---------- Chapter 5 ----------
     if 5 in chapters:
-        backlog_rows = _build_ch5_rows(nodes)
+        backlog_rows = _build_ch5_rows(chapter5_raw, nodes)
         if backlog_rows:
             ch5_csv = plotting / "fig07_chapter5_gat_mp_backlog.csv"
             with ch5_csv.open("w", newline="") as fh:
@@ -318,7 +352,12 @@ def main() -> None:
                 writer.writeheader()
                 writer.writerows(backlog_rows)
             print(f"[plot] chapter5 CSV: {ch5_csv}  ({len(backlog_rows)} rows)")
-            _draw_ch5(backlog_rows, nodes, stem="fig07_chapter5_gat_mp_backlog.eps")
+            _draw_ch5(
+                backlog_rows,
+                nodes,
+                output_root=output_root,
+                stem="fig07_chapter5_gat_mp_backlog.eps",
+            )
         else:
             print("[plot] no Chapter 5 matched-model data found — skipping panel")
 

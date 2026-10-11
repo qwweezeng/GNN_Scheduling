@@ -64,6 +64,12 @@ def main() -> None:
     )
     parser.add_argument("--seeds", default="0,1,2")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument(
+        "--stage",
+        choices=("train", "evaluate", "all"),
+        default="all",
+        help="train=checkpoint/log only; evaluate=existing checkpoints only; all=both.",
+    )
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--device", default="auto", choices=("auto", "cpu", "cuda"))
     parser.add_argument("--gpu-id", type=int, default=0)
@@ -135,6 +141,12 @@ def main() -> None:
                     ):
                         print(f"reuse training {training_json}", flush=True)
                     else:
+                        if args.stage == "evaluate":
+                            raise FileNotFoundError(
+                                "Fig. 4 evaluation requires training.json and both "
+                                f"checkpoints for N={num_uav}, n={train_size}, "
+                                f"seed={model_seed}."
+                            )
                         artifact_dir.mkdir(parents=True, exist_ok=True)
                         checkpoint_dir.mkdir(parents=True, exist_ok=True)
                         cmd = [
@@ -157,6 +169,9 @@ def main() -> None:
                             "--gpu-id", str(args.gpu_id),
                         ]
                         call(cmd)
+
+                if args.stage == "train":
+                    continue
 
                 # ── Evaluation: best checkpoint ─────────────────────────────
                 _evaluate("best", best_checkpoint, artifact_dir, num_uav, args, args.gpu_id, train_size)

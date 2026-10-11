@@ -59,15 +59,13 @@ def chapter4_checkpoint(num_uav: int, csi_mode: str, q_bits: int | None) -> Path
     )
 
 
-def resume_chapter4(num_uav: int, device: str, epochs: int) -> None:
+def resume_chapter4(
+    num_uav: int, device: str, epochs: int, stage: str
+) -> None:
     for csi_mode, q_bits, suffix in CSI_CASES:
         output = HERE / "data/raw" / f"chapter4_N{num_uav}_v2_{suffix}.json"
-        if output.exists():
-            print(f"[skip] {output} already exists", flush=True)
-            continue
-
         checkpoint = chapter4_checkpoint(num_uav, csi_mode, q_bits)
-        if not checkpoint.exists():
+        if not checkpoint.exists() and stage in {"train", "all"}:
             train = [
                 sys.executable, "-u", "train/train_channel_gat_rician.py",
                 "--config", "configs/paper.yaml", "--num_uav", str(num_uav),
@@ -80,6 +78,18 @@ def resume_chapter4(num_uav: int, device: str, epochs: int) -> None:
             if q_bits is not None:
                 train.extend(["--q-bits", str(q_bits)])
             call(train)
+
+        if stage == "train":
+            print(f"[checkpoint] {checkpoint}", flush=True)
+            continue
+        if output.exists():
+            print(f"[skip] {output} already exists", flush=True)
+            continue
+        if not checkpoint.exists():
+            raise FileNotFoundError(
+                f"Missing Chapter IV CSI checkpoint: {checkpoint}. "
+                "Run this wrapper with --stage train first."
+            )
 
         evaluate = [
             sys.executable, "-u", "experiments/evaluate_channel_gat_csi.py",
@@ -123,6 +133,12 @@ def main() -> None:
     parser.add_argument("--arrival-rate", default="2.4")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument(
+        "--stage",
+        choices=("train", "evaluate", "all"),
+        default="all",
+        help="train=Chapter IV CSI checkpoints only; evaluate=no training; all=both.",
+    )
+    parser.add_argument(
         "--chapters", default="4,5",
         help="Comma-separated chapters to run: 4, 5, or 4,5 (default).",
     )
@@ -146,8 +162,8 @@ def main() -> None:
 
     for num_uav in (int(value) for value in args.nodes.split(",") if value.strip()):
         if 4 in chapters:
-            resume_chapter4(num_uav, args.device, args.epochs)
-        if 5 in chapters:
+            resume_chapter4(num_uav, args.device, args.epochs, args.stage)
+        if 5 in chapters and args.stage != "train":
             resume_chapter5(
                 num_uav,
                 args.slots,
@@ -155,6 +171,12 @@ def main() -> None:
                 args.arrival_rate,
                 args.device,
                 chapter5_output_root,
+            )
+        elif 5 in chapters:
+            print(
+                "[checkpoint] Chapter V reuses the matched CSI checkpoints "
+                "prepared by Chapter IV; no separate GAT-MP training is run.",
+                flush=True,
             )
 
 
